@@ -9,7 +9,7 @@ from math import isfinite
 from typing import Any
 
 LOGGER = logging.getLogger(__name__)
-MODEL = "gemini-2.5-flash"
+MODEL = "gemini-2.5-flash-lite"
 
 
 class GeminiRequestError(Exception):
@@ -127,7 +127,7 @@ def _get_gemini_text(
     try:
         with genai.Client(
             api_key=_read_streamlit_gemini_secret() or api_key,
-            http_options=types.HttpOptions(timeout=30),
+            http_options=types.HttpOptions(timeout=60),
         ) as client:
             response = client.models.generate_content(
                 model=MODEL,
