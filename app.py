@@ -8,6 +8,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 from plotly.subplots import make_subplots
+from streamlit.errors import StreamlitSecretNotFoundError
 
 from analyzer import (
     add_signal_flags,
@@ -23,15 +24,24 @@ from config import (
     BACKTEST_PERIOD,
     SIGNAL_THRESHOLD,
 )
-from commentator import generate_ai_comment
+from commentator import generate_ai_comment, generate_postprime_text
 from watchlist_store import load_watchlist, save_watchlist
 
 st.set_page_config(page_title="日本株シグナル検証", page_icon="📈", layout="wide")
+try:
+    GEMINI_API_KEY = st.secrets["GEMINI_API_KEY"]
+except (KeyError, StreamlitSecretNotFoundError):
+    GEMINI_API_KEY = None
+if not isinstance(GEMINI_API_KEY, str) or not GEMINI_API_KEY.strip():
+    GEMINI_API_KEY = None
+
 st.title("日本株テクニカル・シグナル検証")
 st.caption(
     "テクニカル・センチメント・値位置を使った参考分析です。"
     "バックテスト結果や信頼度ランクは将来の利益を保証するものではありません。"
 )
+if GEMINI_API_KEY is None:
+    st.caption("GEMINI_API_KEY未設定のため、解説と投稿文はルールベースで表示します。")
 
 
 @st.cache_data(ttl=900, show_spinner=False)
@@ -258,14 +268,20 @@ if rows:
         latest_reasons.append(f"ADX {current_score['adx']:.1f}")
     if current_score["atr_percent"] is not None:
         latest_reasons.append(f"ATR {current_score['atr_percent']:.2f}%")
+    reasons_hash = hashlib.sha256(
+        json.dumps(latest_reasons, ensure_ascii=False).encode("utf-8")
+    ).hexdigest()[:12]
     comment_cache_key = (
         f"ai-comment-{selected}-{current_score['buy_confidence']}-"
         f"{current_score['sell_confidence']}-{rank}-{win_rate:.4f}-"
         f"{current_score['range_status']}-{current_score['is_ranging']}-"
-        f"{sentiment_rising}"
+        f"{sentiment_rising}-{latest_fear_greed}-{latest_fear_greed_label}-"
+        f"{current_score['range_position']}-{reasons_hash}"
     )
-    if st.button("AI解説を再生成", key=f"refresh-{comment_cache_key}"):
+    postprime_cache_key = comment_cache_key.replace("ai-comment-", "ai-postprime-", 1)
+    if st.button("AI解説・投稿文を再生成", key=f"refresh-{comment_cache_key}"):
         st.session_state.pop(comment_cache_key, None)
+        st.session_state.pop(postprime_cache_key, None)
     if comment_cache_key not in st.session_state:
         with st.spinner("クオンツ解説を作成しています…"):
             st.session_state[comment_cache_key] = generate_ai_comment(
@@ -281,6 +297,13 @@ if rows:
                 range_position=current_score["range_position"],
                 adx=current_score["adx"],
                 atr_percent=current_score["atr_percent"],
+                fear_greed_score=(
+                    float(latest_fear_greed)
+                    if pd.notna(latest_fear_greed)
+                    else None
+                ),
+                fear_greed_label=latest_fear_greed_label,
+                gemini_api_key=GEMINI_API_KEY,
             )
     st.subheader("🤖 ギャルたんクオンツの直感解説")
     st.info(st.session_state[comment_cache_key], icon="🤖", width="stretch")
@@ -546,25 +569,32 @@ if rows:
             key=f"download-png-{selected}",
         )
 
-    direction = (
-        "買い"
-        if current_score["buy_confidence"] >= current_score["sell_confidence"]
-        else "売り"
-    )
-    confidence = max(current_score["buy_confidence"], current_score["sell_confidence"])
-    reasons = current_score["buy_reasons"] if direction == "買い" else current_score["sell_reasons"]
-    post_text = (
-        f"【{company}（{selected}）テクニカル分析】\n"
-        f"買い確度: {current_score['buy_confidence']}% / "
-        f"売り確度: {current_score['sell_confidence']}%\n"
-        f"値位置: {current_score['range_status']} "
-        f"（{current_score['range_position']:.1f}%）\n"
-        f"AI信頼度: ランク{rank}（勝率{win_rate:.1f}%）\n"
-        f"シグナル: {direction}（確度 {confidence}%）\n"
-        f"判定理由: {'、'.join(reasons) if reasons else '明確な条件なし'}\n"
-        "※バックテストは手数料・税金を含まない参考値です。投資判断はご自身の責任でお願いします。"
-    )
+    if postprime_cache_key not in st.session_state:
+        with st.spinner("PostPrime投稿文を作成しています…"):
+            st.session_state[postprime_cache_key] = generate_postprime_text(
+                ticker=selected,
+                company=company,
+                buy_confidence=current_score["buy_confidence"],
+                sell_confidence=current_score["sell_confidence"],
+                rank=rank,
+                win_rate=win_rate,
+                range_status=current_score["range_status"],
+                is_ranging=current_score["is_ranging"],
+                technical_signals=latest_reasons,
+                range_position=current_score["range_position"],
+                adx=current_score["adx"],
+                atr_percent=current_score["atr_percent"],
+                fear_greed_score=(
+                    float(latest_fear_greed)
+                    if pd.notna(latest_fear_greed)
+                    else None
+                ),
+                fear_greed_label=latest_fear_greed_label,
+                buy_reasons=current_score["buy_reasons"],
+                sell_reasons=current_score["sell_reasons"],
+                gemini_api_key=GEMINI_API_KEY,
+            )
     st.markdown("**PostPrime投稿用テキスト**")
-    st.code(post_text, language=None)
+    st.code(st.session_state[postprime_cache_key], language=None)
 else:
     st.info("分析できる銘柄がありません。銘柄コードと株価データ接続を確認してください。")
