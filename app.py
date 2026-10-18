@@ -13,6 +13,7 @@ from analyzer import (
     add_signal_flags,
     backtest_strategy,
     calculate_indicators,
+    calculate_fear_greed_index,
     fetch_stock_data,
     get_google_trends_sentiment,
     score_signal,
@@ -35,7 +36,10 @@ st.caption(
 
 @st.cache_data(ttl=900, show_spinner=False)
 def load_analysis(ticker: str) -> pd.DataFrame:
-    return calculate_indicators(fetch_stock_data(ticker, period=BACKTEST_PERIOD))
+    indicators = calculate_indicators(
+        fetch_stock_data(ticker, period=BACKTEST_PERIOD)
+    )
+    return calculate_fear_greed_index(indicators)
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -142,6 +146,12 @@ with st.spinner("ウォッチリストを分析しています…"):
                     "相場判定": "レンジ" if score["is_ranging"] else "通常",
                     "トレンドの強さ": adx_display,
                     "値動きの激しさ": atr_display,
+                    "恐怖指数": (
+                        f"{latest['Fear_Greed_Label']} "
+                        f"({int(np.floor(latest['Fear_Greed_Score'] + 0.5))})"
+                        if pd.notna(latest["Fear_Greed_Score"])
+                        else "判定不可"
+                    ),
                 }
             )
         except Exception as exc:
@@ -155,7 +165,7 @@ if rows:
     st.dataframe(
         summary,
         width="stretch",
-        alt="ウォッチリスト銘柄の売買確度と5年レンジ位置",
+        alt="ウォッチリスト銘柄の売買確度、テクニカル指標、恐怖指数",
         column_config={
             "終値": st.column_config.NumberColumn(format="%.2f"),
             "買い確度": st.column_config.NumberColumn(format="%d%%"),
@@ -181,6 +191,15 @@ if rows:
                     "ATR%による値動きの大きさ（終値比、日足14日基準）。"
                     "大（激しい）：ATR% 3.0%以上、中（標準）：ATR% 1.5%以上3.0%未満、"
                     "小（穏やか）：ATR% 1.5%未満。括弧内は実際のATR%値です。"
+                ),
+            ),
+            "恐怖指数": st.column_config.TextColumn(
+                help=(
+                    "25日移動平均乖離率（最大±25点）とRSI（最大±15点）を"
+                    "基準点50に加算し、出来高が20日平均の2倍以上なら補正値を"
+                    "1.3倍にします。スコアは0〜100に制限します。"
+                    "判定：0〜20 極度の恐怖、21〜40 恐怖、41〜60 中立、"
+                    "61〜80 貪欲、81〜100 極度の熱狂。"
                 ),
             ),
         },
@@ -209,6 +228,18 @@ if rows:
 
     sentiment_rising = trend_data["rising"] if trend_data else None
     current_score = score_signal(indicators, sentiment_rising=sentiment_rising)
+    fear_greed_score = indicators["Fear_Greed_Score"]
+    latest_fear_greed = fear_greed_score.iloc[-1]
+    previous_fear_greed = (
+        fear_greed_score.iloc[-2] if len(fear_greed_score) > 1 else np.nan
+    )
+    latest_fear_greed_label = indicators["Fear_Greed_Label"].iloc[-1]
+    fear_greed_delta = (
+        int(np.floor(latest_fear_greed + 0.5))
+        - int(np.floor(previous_fear_greed + 0.5))
+        if pd.notna(latest_fear_greed) and pd.notna(previous_fear_greed)
+        else None
+    )
     backtest = backtest_strategy(
         indicators,
         threshold=SIGNAL_THRESHOLD,
@@ -254,26 +285,40 @@ if rows:
     st.subheader("🤖 ギャルたんクオンツの直感解説")
     st.info(st.session_state[comment_cache_key], icon="🤖", width="stretch")
 
-    metric_columns = st.columns(5)
+    metric_columns = st.columns(6)
     metric_columns[0].metric("買い確度", f"{current_score['buy_confidence']}%")
     metric_columns[1].metric("売り確度", f"{current_score['sell_confidence']}%")
     metric_columns[2].metric("5年レンジ位置", current_score["range_status"])
-    metric_columns[3].metric("AI信頼度", f"ランク{rank}", f"{confidence_score}%")
-    metric_columns[4].metric("バックテスト勝率", f"{win_rate:.1f}%")
+    fear_greed_value = (
+        f"{latest_fear_greed_label} "
+        f"({int(np.floor(latest_fear_greed + 0.5))})"
+        if pd.notna(latest_fear_greed)
+        else "判定不可"
+    )
+    metric_columns[3].metric(
+        "恐怖指数",
+        fear_greed_value,
+        f"{fear_greed_delta:+d}pt" if fear_greed_delta is not None else None,
+        delta_color="off",
+        help="括弧内は0〜100のスコアです。デルタは前営業日からのスコア差です。",
+    )
+    metric_columns[4].metric("AI信頼度", f"ランク{rank}", f"{confidence_score}%")
+    metric_columns[5].metric("バックテスト勝率", f"{win_rate:.1f}%")
 
     signal_data = add_signal_flags(indicators, threshold=SIGNAL_THRESHOLD)
     figure = make_subplots(
-        rows=5,
+        rows=6,
         cols=1,
         shared_xaxes=True,
         vertical_spacing=0.045,
-        row_heights=[0.46, 0.16, 0.13, 0.12, 0.13],
+        row_heights=[0.38, 0.12, 0.16, 0.11, 0.1, 0.13],
         subplot_titles=(
             "株価・移動平均・売買シグナル",
+            "出来高",
             "MACD",
             "RSI",
             "ADX",
-            "Googleトレンド 7日移動平均",
+            "個別株 Fear & Greed Index",
         ),
     )
     figure.add_trace(
@@ -326,16 +371,26 @@ if rows:
     figure.add_trace(
         go.Bar(
             x=indicators.index,
-            y=indicators["MACD_Hist"],
-            name="MACDヒストグラム",
-            marker_color="#95a5a6",
+            y=indicators["Volume"],
+            name="出来高",
+            marker_color="#7f8c8d",
         ),
         row=2,
         col=1,
     )
     figure.add_trace(
+        go.Bar(
+            x=indicators.index,
+            y=indicators["MACD_Hist"],
+            name="MACDヒストグラム",
+            marker_color="#95a5a6",
+        ),
+        row=3,
+        col=1,
+    )
+    figure.add_trace(
         go.Scatter(x=indicators.index, y=indicators["MACD"], name="MACD"),
-        row=2,
+        row=3,
         col=1,
     )
     figure.add_trace(
@@ -344,47 +399,35 @@ if rows:
             y=indicators["MACD_Signal"],
             name="MACDシグナル",
         ),
-        row=2,
+        row=3,
         col=1,
     )
-    figure.add_hline(y=70, line_dash="dot", line_color="red", row=3, col=1)
-    figure.add_hline(y=30, line_dash="dot", line_color="green", row=3, col=1)
+    figure.add_hline(y=70, line_dash="dot", line_color="red", row=4, col=1)
+    figure.add_hline(y=30, line_dash="dot", line_color="green", row=4, col=1)
     figure.add_trace(
         go.Scatter(x=indicators.index, y=indicators["RSI"], name="RSI"),
-        row=3,
+        row=4,
         col=1,
     )
     figure.add_trace(
         go.Scatter(x=indicators.index, y=indicators["ADX"], name="ADX"),
-        row=4,
+        row=5,
         col=1,
     )
-    figure.add_hline(y=20, line_dash="dot", line_color="gray", row=4, col=1)
-
-    if trend_data:
-        trend_ma = trend_data["moving_average"].copy()
-        trend_index = pd.DatetimeIndex(pd.to_datetime(trend_ma.index))
-        stock_index = pd.DatetimeIndex(pd.to_datetime(indicators.index))
-        if trend_index.tz is not None:
-            trend_index = trend_index.tz_localize(None)
-        if stock_index.tz is not None:
-            stock_index = stock_index.tz_localize(None)
-        trend_ma.index = trend_index.normalize()
-        stock_dates = stock_index.normalize()
-        trend_ma = trend_ma.groupby(level=0).last().sort_index()
-        aligned_trend = trend_ma.reindex(
-            stock_dates, method="ffill", tolerance=pd.Timedelta(days=3)
-        )
-        figure.add_trace(
-            go.Scatter(
-                x=indicators.index,
-                y=aligned_trend.to_numpy(),
-                name="トレンド7MA",
-                line={"color": "#2ecc71" if sentiment_rising else "#e67e22"},
-            ),
-            row=5,
-            col=1,
-        )
+    figure.add_hline(y=20, line_dash="dot", line_color="#e74c3c", row=6, col=1)
+    figure.add_hline(y=80, line_dash="dot", line_color="#2ecc71", row=6, col=1)
+    figure.add_trace(
+        go.Scatter(
+            x=indicators.index,
+            y=fear_greed_score,
+            name="Fear & Greed スコア",
+            line={"color": "#8e44ad"},
+        ),
+        row=6,
+        col=1,
+    )
+    figure.update_yaxes(title_text="出来高", row=2, col=1)
+    figure.update_yaxes(range=[0, 100], title_text="スコア", row=6, col=1)
 
     figure.update_layout(
         title={
@@ -396,7 +439,7 @@ if rows:
             "x": 0.5,
             "xanchor": "center",
         },
-        height=1150,
+        height=1300,
         xaxis_rangeslider_visible=False,
         hovermode="x unified",
         legend={"orientation": "h", "y": 1.02},
@@ -407,7 +450,8 @@ if rows:
         figure,
         width="stretch",
         alt=(
-            f"{selected} {company} のローソク足・テクニカル指標と"
+            f"{selected} {company} の株価・出来高・テクニカル指標と"
+            "Fear & Greed スコアの推移。"
             f"買い確度{current_score['buy_confidence']}%、"
             f"売り確度{current_score['sell_confidence']}%"
         ),
@@ -421,7 +465,7 @@ if rows:
     if current_score["is_ranging"]:
         st.warning("ADX・ATRが低いレンジ相場と判定され、現在のシグナルは無効化されています。")
     if trend_data is None:
-        st.caption("Googleトレンドの表示・加点はありません。")
+        st.caption("Googleトレンドのセンチメント加点はありません。")
 
     with st.container(border=True):
         st.subheader("簡易バックテスト")

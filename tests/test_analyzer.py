@@ -6,6 +6,8 @@ from analyzer import (
     add_signal_flags,
     backtest_strategy,
     calculate_indicators,
+    calculate_fear_greed_index,
+    classify_fear_greed_score,
     classify_range_position,
     score_signal,
 )
@@ -64,6 +66,62 @@ def test_calculate_indicators_adds_expected_columns(sample_ohlcv):
 def test_calculate_indicators_rejects_missing_data():
     with pytest.raises(ValueError, match="必須列"):
         calculate_indicators(pd.DataFrame({"Close": [1, 2, 3]}))
+
+
+def test_calculate_fear_greed_index_uses_linear_components_and_volume_boost():
+    history = pd.DataFrame(
+        {
+            "Close": [100] * 20,
+            "SMA_25": [100] * 20,
+            "RSI": [50] * 20,
+            "Volume": [100] * 20,
+        }
+    )
+    indicators = pd.DataFrame(
+        {
+            "Close": [110, 90, 110],
+            "SMA_25": [100, 100, 100],
+            "RSI": [70, 30, 70],
+            "Volume": [200, 210, 100],
+        }
+    )
+
+    result = calculate_fear_greed_index(
+        pd.concat([history, indicators], ignore_index=True)
+    )
+    result = result.tail(3)
+
+    assert result["Fear_Greed_Score"].tolist() == pytest.approx([100, 0, 90])
+    assert result["Volume_Ratio"].tolist() == pytest.approx([2, 2, 100 / 110.5])
+    assert result["Fear_Greed_Label"].tolist() == [
+        "🔥 極度の熱狂",
+        "😱 極度の恐怖",
+        "🔥 極度の熱狂",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("score", "expected"),
+    [
+        (0, "😱 極度の恐怖"),
+        (20, "😱 極度の恐怖"),
+        (21, "😨 恐怖"),
+        (40, "😨 恐怖"),
+        (41, "😐 中立"),
+        (60, "😐 中立"),
+        (61, "🙂 貪欲"),
+        (80, "🙂 貪欲"),
+        (81, "🔥 極度の熱狂"),
+        (100, "🔥 極度の熱狂"),
+    ],
+)
+def test_classify_fear_greed_score(score, expected):
+    assert classify_fear_greed_score(score) == expected
+
+
+def test_calculate_fear_greed_index_rejects_missing_indicators():
+    with pytest.raises(ValueError, match="恐怖指数"):
+        calculate_fear_greed_index(pd.DataFrame({"Close": [100]}))
 
 
 def test_score_signal_scores_bullish_conditions_and_sentiment():

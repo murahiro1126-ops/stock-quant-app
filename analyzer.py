@@ -138,6 +138,57 @@ def calculate_indicators(
     return frame
 
 
+def classify_fear_greed_score(score: float | None) -> str | None:
+    """Map a 0-100 Fear & Greed score to its Japanese label."""
+    if score is None or not np.isfinite(score):
+        return None
+    rounded_score = int(np.clip(np.floor(score + 0.5), 0, 100))
+    if rounded_score <= 20:
+        return "😱 極度の恐怖"
+    if rounded_score <= 40:
+        return "😨 恐怖"
+    if rounded_score <= 60:
+        return "😐 中立"
+    if rounded_score <= 80:
+        return "🙂 貪欲"
+    return "🔥 極度の熱狂"
+
+
+def calculate_fear_greed_index(indicators: pd.DataFrame) -> pd.DataFrame:
+    """Add the per-stock Fear & Greed score, label, and volume ratio."""
+    required = {"Close", "SMA_25", "RSI", "Volume"}
+    missing = required.difference(indicators.columns)
+    if missing:
+        raise ValueError(
+            f"恐怖指数の計算に必要な指標がありません: {', '.join(sorted(missing))}"
+        )
+
+    result = indicators.copy()
+    close = pd.to_numeric(result["Close"], errors="coerce")
+    sma_25 = pd.to_numeric(result["SMA_25"], errors="coerce")
+    rsi = pd.to_numeric(result["RSI"], errors="coerce")
+    volume = pd.to_numeric(result["Volume"], errors="coerce")
+    volume_average = volume.shift(1).rolling(20, min_periods=20).mean()
+
+    deviation_percent = ((close / sma_25.where(sma_25 != 0)) - 1) * 100
+    moving_average_component = deviation_percent.clip(-10, 10) / 10 * 25
+    rsi_component = (rsi - 50).clip(-20, 20) / 20 * 15
+    volume_ratio = volume / volume_average.where(volume_average != 0)
+    booster = pd.Series(
+        np.where(volume_ratio >= 2, 1.3, 1.0),
+        index=result.index,
+        dtype=float,
+    )
+    score = (50 + (moving_average_component + rsi_component) * booster).clip(
+        0, 100
+    )
+
+    result["Volume_Ratio"] = volume_ratio
+    result["Fear_Greed_Score"] = score
+    result["Fear_Greed_Label"] = score.map(classify_fear_greed_score)
+    return result
+
+
 def fetch_stock_data(
     ticker: str, period: str = "5y", interval: str = "1d"
 ) -> pd.DataFrame:
