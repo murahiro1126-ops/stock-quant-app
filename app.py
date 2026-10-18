@@ -8,7 +8,6 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 from plotly.subplots import make_subplots
-from streamlit.errors import StreamlitSecretNotFoundError
 
 from analyzer import (
     add_signal_flags,
@@ -24,16 +23,15 @@ from config import (
     BACKTEST_PERIOD,
     SIGNAL_THRESHOLD,
 )
-from commentator import generate_ai_comment, generate_postprime_text
+from commentator import (
+    generate_ai_comment,
+    generate_postprime_text,
+    get_gemini_api_key,
+)
 from watchlist_store import load_watchlist, save_watchlist
 
 st.set_page_config(page_title="日本株シグナル検証", page_icon="📈", layout="wide")
-try:
-    GEMINI_API_KEY = st.secrets["GEMINI_API_KEY"]
-except (KeyError, StreamlitSecretNotFoundError):
-    GEMINI_API_KEY = None
-if not isinstance(GEMINI_API_KEY, str) or not GEMINI_API_KEY.strip():
-    GEMINI_API_KEY = None
+GEMINI_API_KEY = get_gemini_api_key()
 
 st.title("日本株テクニカル・シグナル検証")
 st.caption(

@@ -1,10 +1,10 @@
 from types import SimpleNamespace
 
-import commentator
-from commentator import generate_ai_comment, generate_postprime_text
-from google import genai
 import httpx
 from google import genai
+
+import commentator
+from commentator import generate_ai_comment, generate_postprime_text, get_gemini_api_key
 
 
 def _arguments():
@@ -25,6 +25,33 @@ def _arguments():
         "fear_greed_label": "🙂 貪欲",
         "gemini_api_key": None,
     }
+
+
+def test_get_gemini_api_key_prefers_streamlit_secrets(monkeypatch):
+    class FakeSecrets:
+        def get(self, key):
+            assert key == "GEMINI_API_KEY"
+            return " streamlit-secret "
+
+    import streamlit as st
+
+    monkeypatch.setattr(st, "secrets", FakeSecrets())
+    monkeypatch.setenv("GEMINI_API_KEY", "environment-key")
+
+    assert get_gemini_api_key() == "streamlit-secret"
+
+
+def test_get_gemini_api_key_falls_back_to_environment(monkeypatch):
+    class FakeSecrets:
+        def get(self, key):
+            return None
+
+    import streamlit as st
+
+    monkeypatch.setattr(st, "secrets", FakeSecrets())
+    monkeypatch.setenv("GEMINI_API_KEY", " environment-key ")
+
+    assert get_gemini_api_key() == "environment-key"
 
 
 def test_generate_ai_comment_uses_fallback_without_api_key():
@@ -103,16 +130,21 @@ def test_get_gemini_text_uses_sdk_config_and_returns_text(monkeypatch):
             return False
 
     monkeypatch.setattr(genai, "Client", FakeClient)
+    monkeypatch.setattr(
+        commentator,
+        "_read_streamlit_gemini_secret",
+        lambda: "streamlit-secret",
+    )
 
     result = commentator._get_gemini_text(
-        "test-gemini-key",
+        "explicit-key",
         "system instruction",
         "user instruction",
         {"ticker": "7203.T"},
     )
 
     assert result == "Geminiの解説"
-    assert captured["client"]["api_key"] == "test-gemini-key"
+    assert captured["client"]["api_key"] == "streamlit-secret"
     assert captured["client"]["http_options"].timeout == 20
     assert captured["request"]["model"] == commentator.MODEL
     assert captured["request"]["config"].system_instruction == "system instruction"
