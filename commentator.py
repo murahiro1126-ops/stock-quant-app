@@ -127,7 +127,7 @@ def _get_gemini_text(
     try:
         with genai.Client(
             api_key=_read_streamlit_gemini_secret() or api_key,
-            http_options=types.HttpOptions(timeout=20),
+            http_options=types.HttpOptions(timeout=30),
         ) as client:
             response = client.models.generate_content(
                 model=MODEL,
