@@ -23,6 +23,7 @@ from config import (
     BACKTEST_PERIOD,
     SIGNAL_THRESHOLD,
 )
+from chart_format import CHART_FONT_FAMILY, build_chart_title
 from commentator import (
     generate_ai_comment,
     generate_postprime_text,
@@ -452,14 +453,29 @@ if rows:
 
     figure.update_layout(
         title={
-            "text": (
-                f"{selected} {company} | 買い確度: {current_score['buy_confidence']}% "
-                f"/ 売り確度: {current_score['sell_confidence']}% | "
-                f"AI信頼度: ランク{rank} (勝率{win_rate:.1f}%)"
+            "text": build_chart_title(
+                ticker=selected,
+                company=company,
+                buy_confidence=current_score["buy_confidence"],
+                sell_confidence=current_score["sell_confidence"],
+                range_status=current_score["range_status"],
+                fear_greed_label=(
+                    latest_fear_greed_label
+                    if isinstance(latest_fear_greed_label, str)
+                    else "判定不可"
+                ),
+                fear_greed_score=(
+                    float(latest_fear_greed)
+                    if pd.notna(latest_fear_greed)
+                    else None
+                ),
+                rank=rank,
+                win_rate=win_rate,
             ),
             "x": 0.5,
             "xanchor": "center",
         },
+        font={"family": CHART_FONT_FAMILY},
         height=1300,
         xaxis_rangeslider_visible=False,
         hovermode="x unified",
@@ -549,7 +565,10 @@ if rows:
 
     if st.button("PNG画像を生成", key=f"generate-png-{selected}"):
         try:
-            st.session_state["chart_png_data"] = figure.to_image(format="png")
+            st.session_state["chart_png_data"] = figure.to_image(
+                format="png",
+                width=1600,
+            )
             st.session_state["chart_png_ticker"] = selected
         except (ValueError, ImportError, RuntimeError) as exc:
             st.session_state.pop("chart_png_data", None)
