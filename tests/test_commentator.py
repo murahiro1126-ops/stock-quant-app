@@ -165,11 +165,20 @@ def test_generate_ai_comment_falls_back_on_api_error(monkeypatch):
     assert "ランクA" in result
 
 
-def test_generate_ai_comment_falls_back_on_network_error(monkeypatch):
+def test_generate_ai_comment_logs_original_api_error_and_status(monkeypatch, capsys):
     class FakeModels:
         def generate_content(self, **kwargs):
             request = httpx.Request("POST", "https://generativelanguage.googleapis.com")
-            raise httpx.ConnectError("test connection error", request=request)
+            response = httpx.Response(
+                429,
+                request=request,
+                text='{"error":"quota exceeded"}',
+            )
+            raise httpx.HTTPStatusError(
+                "test quota error",
+                request=request,
+                response=response,
+            )
 
     class FakeClient:
         def __init__(self, **kwargs):
@@ -188,6 +197,11 @@ def test_generate_ai_comment_falls_back_on_network_error(monkeypatch):
 
     assert "トヨタ自動車（7203.T）" in result
     assert "ランクA" in result
+    output = capsys.readouterr().out
+    assert "DEBUG GEMINI ERROR:" in output
+    assert "test quota error" in output
+    assert "status_code=429" in output
+    assert "quota exceeded" in output
 
 
 def test_generate_postprime_text_falls_back_without_api_key():

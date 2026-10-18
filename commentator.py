@@ -143,6 +143,17 @@ def _get_gemini_text(
                 ),
             )
     except (errors.APIError, httpx.HTTPError, OSError) as exc:
+        status_code = getattr(exc, "code", None) or getattr(exc, "status_code", None)
+        if status_code is None:
+            status_code = getattr(getattr(exc, "response", None), "status_code", None)
+        print(
+            f"DEBUG GEMINI ERROR: {exc!r}; status_code={status_code}",
+            flush=True,
+        )
+        response = getattr(exc, "response", None)
+        response_text = getattr(response, "text", None)
+        if isinstance(response_text, str) and response_text:
+            print(f"DEBUG GEMINI RESPONSE: {response_text[:2000]}", flush=True)
         raise GeminiRequestError("Gemini APIまたは通信でエラーが発生しました。") from exc
 
     content = response.text
