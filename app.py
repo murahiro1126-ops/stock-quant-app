@@ -111,6 +111,26 @@ with st.spinner("ウォッチリストを分析しています…"):
             data_by_ticker[ticker] = indicators
             latest = indicators.iloc[-1]
             score = score_signal(indicators)
+            adx_value = score["adx"]
+            if adx_value is None:
+                adx_display = "判定不可 (ADX取得不可)"
+            else:
+                adx_level = "強" if adx_value >= 25 else "中" if adx_value >= 20 else "弱"
+                adx_display = f"{adx_level} ({adx_value:.1f})"
+
+            atr_value = score["atr_percent"]
+            if atr_value is None:
+                atr_display = "判定不可 (ATR%取得不可)"
+            else:
+                atr_level = (
+                    "大"
+                    if atr_value >= 3.0
+                    else "中"
+                    if atr_value >= 1.5
+                    else "小"
+                )
+                atr_display = f"{atr_level} ({atr_value:.2f}%)"
+
             rows.append(
                 {
                     "銘柄": f"{ticker}: {company}",
@@ -120,8 +140,8 @@ with st.spinner("ウォッチリストを分析しています…"):
                     "5年レンジ位置": score["range_position"],
                     "値位置": score["range_status"],
                     "相場判定": "レンジ" if score["is_ranging"] else "通常",
-                    "ADX": score["adx"],
-                    "ATR%": score["atr_percent"],
+                    "トレンドの強さ": adx_display,
+                    "値動きの激しさ": atr_display,
                 }
             )
         except Exception as exc:
@@ -141,8 +161,28 @@ if rows:
             "買い確度": st.column_config.NumberColumn(format="%d%%"),
             "売り確度": st.column_config.NumberColumn(format="%d%%"),
             "5年レンジ位置": st.column_config.NumberColumn(format="%.1f%%"),
-            "ADX": st.column_config.NumberColumn(format="%.1f"),
-            "ATR%": st.column_config.NumberColumn(format="%.2f%%"),
+            "相場判定": st.column_config.TextColumn(
+                help=(
+                    "相場環境の判定状態。"
+                    "・通常：上記以外の相場状態"
+                    "・レンジ：ADX < 20 かつ ATR% < 1.5%"
+                    "※レンジ判定では売買確度は自動で0%になります"
+                )
+            ),
+            "トレンドの強さ": st.column_config.TextColumn(
+                help=(
+                    "ADXによるトレンドの強さ（方向性は示しません、日足14日基準）。"
+                    "強：ADX 25以上、中：ADX 20以上25未満、弱：ADX 20未満。"
+                    "括弧内は実際のADX値です。"
+                ),
+            ),
+            "値動きの激しさ": st.column_config.TextColumn(
+                help=(
+                    "ATR%による値動きの大きさ（終値比、日足14日基準）。"
+                    "大（激しい）：ATR% 3.0%以上、中（標準）：ATR% 1.5%以上3.0%未満、"
+                    "小（穏やか）：ATR% 1.5%未満。括弧内は実際のATR%値です。"
+                ),
+            ),
         },
     )
 
