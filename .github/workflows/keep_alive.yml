@@ -1,0 +1,18 @@
+name: Streamlit Keep Alive (安心してください！寝てないよ！)
+
+on:
+  schedule:
+    # 1日2回実行する設定（UTC基準）
+    # UTC 0:00（日本時間 9:00） と UTC 12:00（日本時間 21:00）
+    - cron: '0 0,12 * * *'
+  workflow_dispatch: # 手動実行用
+
+jobs:
+  keep-alive:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping Streamlit App
+        run: |
+          # 自分の実際のStreamlitアプリのURLに変更してね！
+          curl -sS https://quant-stock-analyzer.streamlit.app/ > /dev/null
+          echo "安心してください！僕寝てないよ！"
