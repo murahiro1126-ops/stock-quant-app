@@ -30,6 +30,7 @@ from commentator import (
     get_gemini_api_key,
 )
 from sector_flow import (
+    RANKING_PERIODS,
     TSE33_SECTOR_TICKERS,
     build_matrix_figure,
     build_ranking_figure,
@@ -148,11 +149,27 @@ else:
     st.info(get_rrg_comment(sector_metrics))
 
     st.subheader("東証33業種 モメンタム TOP5 / ワースト5")
-    ranking_figure = build_ranking_figure(sector_metrics)
+    ranking_period_label = st.segmented_control(
+        "ランキング期間",
+        options=list(RANKING_PERIODS),
+        default="20営業日（1ヶ月）",
+        key="sector-ranking-period",
+    )
+    if ranking_period_label is None:
+        ranking_period_label = "20営業日（1ヶ月）"
+    ranking_period = RANKING_PERIODS[ranking_period_label]
+    st.caption(
+        "赤は選択期間の上位5業種、青は下位5業種です。"
+        "灰色の破線は0%、紫の点線は同期間のTOPIXリターンです。"
+    )
+    ranking_figure = build_ranking_figure(sector_metrics, ranking_period)
     st.plotly_chart(
         ranking_figure,
         width="stretch",
-        alt="東証33業種の代表銘柄バスケットによる20営業日モメンタム上位5業種と下位5業種",
+        alt=(
+            f"東証33業種の代表銘柄バスケットによる{ranking_period}営業日"
+            "リターン上位5業種と下位5業種"
+        ),
         config={
             "displayModeBar": True,
             "toImageButtonOptions": {
@@ -161,9 +178,9 @@ else:
                 "scale": 2,
             },
         },
-        key="sector-ranking-chart",
+        key=f"sector-ranking-chart-{ranking_period}",
     )
-    st.info(get_ranking_comment(sector_metrics))
+    st.info(get_ranking_comment(sector_metrics, ranking_period))
 
     st.subheader("多期間比較マトリックス")
     st.caption(

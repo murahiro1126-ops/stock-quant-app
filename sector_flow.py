@@ -49,6 +49,11 @@ MARKET_TICKER = "1306.T"
 MARKET_COLUMN = "TOPIX"
 RS_LOOKBACK = 20
 RS_MOMENTUM_LOOKBACK = 10
+RANKING_PERIODS: dict[str, int] = {
+    "5営業日（1週間）": 5,
+    "20営業日（1ヶ月）": 20,
+    "60営業日（3ヶ月）": 60,
+}
 
 _QUADRANT_COLORS = {
     "Leading": "#2e8b57",
@@ -194,9 +199,15 @@ def calculate_sector_metrics(close_prices: pd.DataFrame) -> pd.DataFrame:
         )
         pair["Return_1D"] = pair["Close"].pct_change() * 100
         pair["Return_5D"] = pair["Close"].pct_change(5) * 100
+        pair["Return_20D"] = pair["Close"].pct_change(20) * 100
+        pair["Return_60D"] = pair["Close"].pct_change(60) * 100
         pair["Return_PreviousWeek"] = pair["Close"].shift(5).pct_change(5) * 100
         pair["Return_PreviousMonth"] = pair["Close"].shift(21).pct_change(21) * 100
-        pair["Momentum_20D"] = pair["Close"].pct_change(20) * 100
+        pair["Momentum_20D"] = pair["Return_20D"]
+        for period in RANKING_PERIODS.values():
+            pair[f"Market_Return_{period}D"] = (
+                pair["Market_Close"].pct_change(period) * 100
+            )
         relative_return_5d = relative_strength.pct_change(5)
         pair["EarlySignal"] = (
             pair["Return_5D"].gt(0)
@@ -444,41 +455,78 @@ def _hex_to_rgba(color: str, alpha: float) -> str:
     return f"rgba({red}, {green}, {blue}, {alpha:.2f})"
 
 
-def build_ranking_figure(metrics: pd.DataFrame) -> go.Figure:
-    latest = _latest_by_sector(metrics).dropna(subset=["Momentum_20D"])
+def build_ranking_figure(metrics: pd.DataFrame, period: int = 20) -> go.Figure:
+    if period not in RANKING_PERIODS.values():
+        raise ValueError(f"未対応のランキング期間です: {period}")
+    return_column = f"Return_{period}D"
+    market_column = f"Market_Return_{period}D"
+    required = {return_column, market_column}
+    missing = required.difference(metrics.columns)
+    if missing:
+        raise ValueError(
+            "ランキング指標が不足しています: " + ", ".join(sorted(missing))
+        )
+
+    latest = _latest_by_sector(metrics).dropna(subset=[return_column])
     if latest.empty:
-        raise ValueError("ランキングを描画できる20日モメンタムがありません。")
+        raise ValueError(
+            f"ランキングを描画できる{period}営業日リターンがありません。"
+        )
     extremes = pd.concat(
-        [
-            latest.nsmallest(5, "Momentum_20D"),
-            latest.nlargest(5, "Momentum_20D"),
-        ]
+        [latest.nsmallest(5, return_column), latest.nlargest(5, return_column)]
     )
     extremes = extremes.loc[~extremes.index.duplicated(keep="first")].sort_values(
-        "Momentum_20D"
+        return_column
     )
-    values = extremes["Momentum_20D"].astype(float)
+    values = extremes[return_column].astype(float)
+    market_values = latest[market_column].dropna()
+    market_return = float(market_values.iloc[-1]) if not market_values.empty else 0.0
+    top_sectors = set(latest.nlargest(5, return_column).index)
+    rank_labels = [
+        "TOP5" if sector in top_sectors else "ワースト5"
+        for sector in extremes.index
+    ]
+    ticker_labels = [
+        ", ".join(
+            ticker.removesuffix(".T")
+            for ticker in TSE33_SECTOR_TICKERS.get(sector, ())
+        )
+        for sector in extremes.index
+    ]
     figure = go.Figure(
         go.Bar(
             x=values,
             y=extremes.index,
             orientation="h",
             marker_color=[
-                "#d9534f" if value >= 0 else "#4386c6" for value in values
+                "#c0392b" if sector in top_sectors else "#2874a6"
+                for sector in extremes.index
             ],
             text=[f"{value:+.1f}%" for value in values],
             textposition="outside",
-            hovertemplate="%{y}<br>20日リターン: %{x:.2f}%<extra></extra>",
+            customdata=np.column_stack([rank_labels, ticker_labels]),
+            hovertemplate=(
+                "%{y}（%{customdata[0]}）<br>代表銘柄: %{customdata[1]}"
+                f"<br>{period}営業日リターン: "
+                "%{x:.2f}%<extra></extra>"
+            ),
         )
     )
     figure.add_vline(x=0, line_color="#666", line_dash="dash")
+    figure.add_vline(
+        x=market_return,
+        line_color="#8e44ad",
+        line_dash="dot",
+        annotation_text=f"TOPIX {market_return:+.2f}%",
+        annotation_position="top",
+    )
     figure.update_layout(
-        title="20営業日モメンタム TOP5 / ワースト5",
-        xaxis_title="20営業日リターン（%）",
+        title=f"{period}営業日リターン TOP5 / ワースト5",
+        xaxis_title=f"{period}営業日リターン（%）",
         yaxis_title=None,
         font={"family": CHART_FONT_FAMILY},
-        height=480,
-        margin={"t": 70, "b": 45, "l": 180, "r": 70},
+        height=max(480, 150 + len(extremes) * 34),
+        margin={"t": 70, "b": 45, "l": 180, "r": 100},
         showlegend=False,
     )
     return figure
@@ -700,15 +748,70 @@ def get_rrg_comment(metrics: pd.DataFrame) -> str:
     )
 
 
-def get_ranking_comment(metrics: pd.DataFrame) -> str:
-    latest = _latest_by_sector(metrics).dropna(subset=["Momentum_20D"])
+def get_ranking_comment(metrics: pd.DataFrame, period: int = 20) -> str:
+    if period not in RANKING_PERIODS.values():
+        raise ValueError(f"未対応のランキング期間です: {period}")
+    return_column = f"Return_{period}D"
+    market_column = f"Market_Return_{period}D"
+    required = {return_column, market_column}
+    missing = required.difference(metrics.columns)
+    if missing:
+        raise ValueError(
+            "ランキング指標が不足しています: " + ", ".join(sorted(missing))
+        )
+
+    latest = _latest_by_sector(metrics).dropna(subset=[return_column])
     if latest.empty:
         return "ランキング対象となるデータがありません。"
-    strongest = latest["Momentum_20D"].idxmax()
-    weakest = latest["Momentum_20D"].idxmin()
+
+    strongest = latest[return_column].idxmax()
+    weakest = latest[return_column].idxmin()
+    strongest_return = float(latest.loc[strongest, return_column])
+    weakest_return = float(latest.loc[weakest, return_column])
+    spread = strongest_return - weakest_return
+    market_values = latest[market_column].dropna()
+    market_return = float(market_values.iloc[-1]) if not market_values.empty else 0.0
+    excess = latest[return_column] - latest[market_column]
+    positive_excess = excess.clip(lower=0)
+    total_positive_excess = float(positive_excess.sum())
+
+    if total_positive_excess > 0:
+        top_three = positive_excess.nlargest(min(3, len(positive_excess)))
+        concentration = float(top_three.sum() / total_positive_excess * 100)
+        concentration_comment = (
+            f"TOPIX超過分の{concentration:.0f}%が上位{len(top_three)}業種に集中しています。"
+        )
+    else:
+        concentration_comment = (
+            "TOPIXを上回る業種がなく、上昇テーマの広がりは限定的です。"
+        )
+
+    theme_leaders = excess.nlargest(min(3, len(excess)))
+    theme_summary = "、".join(
+        f"{sector}（TOPIX比 {value:+.2f}pt、代表: "
+        f"{', '.join(ticker.removesuffix('.T') for ticker in TSE33_SECTOR_TICKERS.get(sector, ()))})"
+        for sector, value in theme_leaders.items()
+        if value > 0
+    )
+    if theme_summary:
+        theme_comment = f"相対優位テーマは{theme_summary}です。"
+    else:
+        theme_comment = "TOPIXを上回る業種がなく、相対優位テーマは見られません。"
+
+    if spread >= 10:
+        dispersion_comment = "業種間格差が大きく、選別色の強い相場です。"
+    elif spread >= 5:
+        dispersion_comment = "業種間格差は中程度で、強弱の見極めが重要です。"
+    else:
+        dispersion_comment = "業種間格差は小さく、業種選別の優位性は限定的です。"
+
     return (
-        f"代表銘柄バスケットの20営業日モメンタム最上位は「{strongest}」、"
-        f"最下位は「{weakest}」です。各業種内の代表銘柄を等ウェイトで集計しています。"
+        f"【{period}営業日分析】最強は「{strongest}」({strongest_return:+.2f}%)、"
+        f"最弱は「{weakest}」({weakest_return:+.2f}%)で、格差は{spread:.2f}ptです。"
+        f"{dispersion_comment} TOPIXは{market_return:+.2f}%。"
+        f"{concentration_comment}{theme_comment}"
+        "代表銘柄は業種内で等ウェイト集計した代理指標であり、"
+        "実際の資金フローや売買推奨を示すものではありません。"
     )
 
 

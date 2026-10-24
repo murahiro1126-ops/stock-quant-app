@@ -6,6 +6,7 @@ import pytest
 from sector_flow import (
     MARKET_COLUMN,
     MARKET_TICKER,
+    RANKING_PERIODS,
     TSE33_SECTOR_TICKERS,
     _extract_close_prices,
     build_matrix_figure,
@@ -14,6 +15,7 @@ from sector_flow import (
     calculate_sector_metrics,
     fetch_sector_close_prices,
     get_matrix_comment,
+    get_ranking_comment,
     get_rrg_comment,
     get_rrg_selected_sectors,
 )
@@ -105,6 +107,11 @@ def test_calculate_sector_metrics_builds_shared_returns_and_early_flag(
         "RS_Momentum",
         "Return_1D",
         "Return_5D",
+        "Return_20D",
+        "Return_60D",
+        "Market_Return_5D",
+        "Market_Return_20D",
+        "Market_Return_60D",
         "Return_PreviousWeek",
         "Return_PreviousMonth",
         "Momentum_20D",
@@ -139,6 +146,36 @@ def test_matrix_comment_reports_early_signal_count(sample_sector_prices):
     metrics = calculate_sector_metrics(sample_sector_prices)
 
     assert get_matrix_comment(metrics).startswith("初動フラグは")
+
+
+@pytest.mark.parametrize("period", RANKING_PERIODS.values())
+def test_ranking_figure_and_comment_follow_selected_period(
+    sample_sector_prices, period
+):
+    metrics = calculate_sector_metrics(sample_sector_prices)
+
+    figure = build_ranking_figure(metrics, period)
+    comment = get_ranking_comment(metrics, period)
+
+    assert f"{period}営業日" in figure.layout.title.text
+    assert len(figure.data[0].x) == 2
+    assert figure.data[0].customdata.shape == (2, 2)
+    assert len(figure.layout.shapes) == 2
+    assert any(
+        annotation.text.startswith("TOPIX ")
+        for annotation in figure.layout.annotations
+    )
+    assert f"【{period}営業日分析】" in comment
+    assert "格差は" in comment
+    assert "TOPIX超過分" in comment or "TOPIXを上回る業種がなく" in comment
+    assert "代表:" in comment or "相対優位テーマは見られません" in comment
+
+
+def test_ranking_rejects_unsupported_period(sample_sector_prices):
+    metrics = calculate_sector_metrics(sample_sector_prices)
+
+    with pytest.raises(ValueError, match="未対応"):
+        build_ranking_figure(metrics, 30)
 
 
 def test_rrg_comment_detects_recent_lagging_to_improving_transition():
