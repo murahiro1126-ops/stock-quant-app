@@ -56,6 +56,12 @@ _QUADRANT_COLORS = {
     "Lagging": "#d9534f",
     "Improving": "#4386c6",
 }
+_QUADRANT_LABELS = {
+    "Leading": "先導（右上）",
+    "Weakening": "減速（右下）",
+    "Lagging": "停滞（左下）",
+    "Improving": "改善（左上）",
+}
 
 
 def _extract_close_prices(
@@ -221,21 +227,99 @@ def _latest_by_sector(metrics: pd.DataFrame) -> pd.DataFrame:
     )
 
 
+def _rrg_quadrant(rs_ratio: float, rs_momentum: float) -> str:
+    if rs_ratio >= 100 and rs_momentum >= 100:
+        return "Leading"
+    if rs_ratio >= 100:
+        return "Weakening"
+    if rs_momentum >= 100:
+        return "Improving"
+    return "Lagging"
+
+
 def build_rrg_figure(metrics: pd.DataFrame) -> go.Figure:
     latest = _latest_by_sector(metrics).dropna(subset=["RS_Ratio", "RS_Momentum"])
     if latest.empty:
         raise ValueError("RRGを描画できる相対指標データがありません。")
 
-    x_values = latest["RS_Ratio"].astype(float)
-    y_values = latest["RS_Momentum"].astype(float)
+    recent_points = (
+        metrics.sort_values("Date")
+        .groupby("Sector", sort=False)
+        .tail(5)
+        .dropna(subset=["RS_Ratio", "RS_Momentum"])
+    )
+    x_values = pd.concat([latest["RS_Ratio"], recent_points["RS_Ratio"]]).astype(float)
+    y_values = pd.concat(
+        [latest["RS_Momentum"], recent_points["RS_Momentum"]]
+    ).astype(float)
     x_min, x_max = min(float(x_values.min()), 100.0), max(float(x_values.max()), 100.0)
     y_min, y_max = min(float(y_values.min()), 100.0), max(float(y_values.max()), 100.0)
-    x_padding = max((x_max - x_min) * 0.15, 1.0)
-    y_padding = max((y_max - y_min) * 0.15, 1.0)
+    x_padding = max((x_max - x_min) * 0.12, 1.0)
+    y_padding = max((y_max - y_min) * 0.12, 1.0)
     x_range = [x_min - x_padding, x_max + x_padding]
     y_range = [y_min - y_padding, y_max + y_padding]
 
     figure = go.Figure()
+    latest_x = latest["RS_Ratio"].astype(float)
+    latest_y = latest["RS_Momentum"].astype(float)
+    improving = latest.loc[latest_x.lt(100) & latest_y.ge(100)]
+    momentum_leaders = latest.nlargest(3, "Momentum_20D")
+    labeled_sectors = set(improving.index) | set(momentum_leaders.index)
+
+    for sector, sector_history in metrics.groupby("Sector", sort=False):
+        tail = (
+            sector_history.sort_values("Date")
+            .dropna(subset=["RS_Ratio", "RS_Momentum"])
+            .tail(5)
+        )
+        if len(tail) < 2:
+            continue
+        quadrant = _rrg_quadrant(
+            float(tail["RS_Ratio"].iloc[-1]),
+            float(tail["RS_Momentum"].iloc[-1]),
+        )
+        figure.add_trace(
+            go.Scatter(
+                x=tail["RS_Ratio"],
+                y=tail["RS_Momentum"],
+                customdata=np.column_stack(
+                    [
+                        tail["Date"].astype(str),
+                        np.full(len(tail), sector, dtype=object),
+                    ]
+                ),
+                mode="lines+markers",
+                name=f"{sector} 軌跡",
+                showlegend=False,
+                line={"color": _QUADRANT_COLORS[quadrant], "width": 1.5},
+                marker={
+                    "color": _QUADRANT_COLORS[quadrant],
+                    "size": [4, 5, 6, 7, 8][-len(tail) :],
+                },
+                hovertemplate=(
+                    "%{customdata[1]}<br>日付: %{customdata[0]}"
+                    "<br>RS-Ratio: %{x:.2f}"
+                    "<br>RS-Momentum: %{y:.2f}<extra>移動軌跡</extra>"
+                ),
+            )
+        )
+        figure.add_annotation(
+            x=float(tail["RS_Ratio"].iloc[-1]),
+            y=float(tail["RS_Momentum"].iloc[-1]),
+            ax=float(tail["RS_Ratio"].iloc[-2]),
+            ay=float(tail["RS_Momentum"].iloc[-2]),
+            xref="x",
+            yref="y",
+            axref="x",
+            ayref="y",
+            text="",
+            showarrow=True,
+            arrowhead=2,
+            arrowsize=0.8,
+            arrowwidth=1.2,
+            arrowcolor=_QUADRANT_COLORS[quadrant],
+        )
+
     quadrants = (
         ("Leading", x_values.ge(100) & y_values.ge(100)),
         ("Weakening", x_values.ge(100) & y_values.lt(100)),
@@ -246,26 +330,50 @@ def build_rrg_figure(metrics: pd.DataFrame) -> go.Figure:
         selected = latest.loc[condition]
         if selected.empty:
             continue
+        customdata = np.column_stack(
+            [
+                selected.index,
+                [_QUADRANT_LABELS[label]] * len(selected),
+                selected["Momentum_20D"].map(
+                    lambda value: f"{value:+.2f}%"
+                    if pd.notna(value) and np.isfinite(value)
+                    else "—"
+                ),
+            ]
+        )
         figure.add_trace(
             go.Scatter(
                 x=selected["RS_Ratio"],
                 y=selected["RS_Momentum"],
-                customdata=selected.index,
-                mode="markers",
+                customdata=customdata,
+                text=[
+                    sector if sector in labeled_sectors else ""
+                    for sector in selected.index
+                ],
+                textposition="top center",
+                mode="markers+text",
                 name=label,
-                marker={"size": 11, "color": _QUADRANT_COLORS[label]},
+                marker={
+                    "size": 12 if label == "Improving" else 10,
+                    "color": _QUADRANT_COLORS[label],
+                    "line": {"color": "white", "width": 1},
+                },
                 hovertemplate=(
-                    "%{customdata}<br>RS-Ratio: %{x:.2f}"
-                    "<br>RS-Momentum: %{y:.2f}<extra>%{fullData.name}</extra>"
+                    "業種: %{customdata[0]}"
+                    "<br>象限: %{customdata[1]}"
+                    "<br>RS-Ratio: %{x:.2f}"
+                    "<br>RS-Momentum: %{y:.2f}"
+                    "<br>20日モメンタム: %{customdata[2]}"
+                    "<extra></extra>"
                 ),
             )
         )
 
     for x0, x1, y0, y1, label in (
-        (x_range[0], 100, 100, y_range[1], "Leading"),
-        (100, x_range[1], 100, y_range[1], "Weakening"),
-        (x_range[0], 100, y_range[0], 100, "Improving"),
-        (100, x_range[1], y_range[0], 100, "Lagging"),
+        (x_range[0], 100, 100, y_range[1], "Improving"),
+        (100, x_range[1], 100, y_range[1], "Leading"),
+        (x_range[0], 100, y_range[0], 100, "Lagging"),
+        (100, x_range[1], y_range[0], 100, "Weakening"),
     ):
         figure.add_shape(
             type="rect",
@@ -284,8 +392,8 @@ def build_rrg_figure(metrics: pd.DataFrame) -> go.Figure:
         title="セクター相対強度ローテーション（RRG）",
         xaxis_title="相対強度（RS-Ratio）",
         yaxis_title="相対モメンタム（RS-Momentum）",
-        xaxis={"range": x_range, "zeroline": False},
-        yaxis={"range": y_range, "zeroline": False},
+        xaxis={"range": x_range, "zeroline": False, "autorange": False},
+        yaxis={"range": y_range, "zeroline": False, "autorange": False},
         font={"family": CHART_FONT_FAMILY},
         height=560,
         hovermode="closest",
@@ -406,14 +514,59 @@ def build_matrix_figure(metrics: pd.DataFrame) -> go.Figure:
 
 
 def get_rrg_comment(metrics: pd.DataFrame) -> str:
-    latest = _latest_by_sector(metrics).dropna(subset=["RS_Ratio", "RS_Momentum"])
+    required = {"Date", "Sector", "RS_Ratio", "RS_Momentum"}
+    if not required.issubset(metrics.columns):
+        raise ValueError("RRGコメントには Date / Sector / RS_Ratio / RS_Momentum が必要です。")
+
+    valid = metrics.dropna(subset=["RS_Ratio", "RS_Momentum"]).sort_values("Date")
+    latest = _latest_by_sector(valid)
+    improving_mask = latest["RS_Ratio"].lt(100) & latest["RS_Momentum"].ge(100)
+    improving = latest.loc[improving_mask]
     leading = int(
         (latest["RS_Ratio"].ge(100) & latest["RS_Momentum"].ge(100)).sum()
     )
-    improving = int((latest["RS_Ratio"].lt(100) & latest["RS_Momentum"].ge(100)).sum())
+    stagnating = int(
+        (latest["RS_Ratio"].lt(100) & latest["RS_Momentum"].lt(100)).sum()
+    )
+
+    histories = {
+        sector: group.sort_values("Date")
+        for sector, group in valid.groupby("Sector", sort=False)
+    }
+    initial_entries: list[str] = []
+    rising_improving: list[str] = []
+    for sector in improving.index:
+        history = histories[str(sector)].tail(2)
+        if len(history) < 2:
+            continue
+        previous = history.iloc[-2]
+        if previous["RS_Ratio"] < 100 and previous["RS_Momentum"] < 100:
+            initial_entries.append(str(sector))
+        if history["RS_Momentum"].iloc[-1] > history["RS_Momentum"].iloc[-2]:
+            rising_improving.append(str(sector))
+
+    if initial_entries:
+        initial_signal = (
+            "停滞（左下）から改善（左上）へ直近で進入した初動セクター: "
+            + "、".join(initial_entries)
+            + "。"
+        )
+    else:
+        initial_signal = (
+            "停滞（左下）から改善（左上）へ直近で進入した初動セクターはありません。"
+        )
+
+    vector_summary = (
+        "軌跡でもモメンタムが上向いている改善業種: "
+        + "、".join(rising_improving)
+        + "。"
+        if rising_improving
+        else "改善ゾーン内でモメンタムが上向く業種はありません。"
+    )
     return (
-        f"現在は「先導」象限が{leading}業種、「改善」象限が{improving}業種です。"
-        "市場に対する相対強度とその勢いを示す参考値です。"
+        f"現在は先導（右上）が{leading}業種、改善（左上）が{len(improving)}業種、"
+        f"停滞（左下）が{stagnating}業種です。{initial_signal}{vector_summary}"
+        "座標の直近4営業日の軌跡と矢印で移動方向を示しています。"
     )
 
 

@@ -14,6 +14,7 @@ from sector_flow import (
     calculate_sector_metrics,
     fetch_sector_close_prices,
     get_matrix_comment,
+    get_rrg_comment,
 )
 
 
@@ -139,6 +140,46 @@ def test_matrix_comment_reports_early_signal_count(sample_sector_prices):
     assert get_matrix_comment(metrics).startswith("初動フラグは")
 
 
+def test_rrg_comment_detects_recent_lagging_to_improving_transition():
+    dates = pd.date_range("2025-01-01", periods=3, freq="B")
+    metrics = pd.DataFrame(
+        [
+            {
+                "Date": date,
+                "Sector": "初動業種",
+                "RS_Ratio": ratio,
+                "RS_Momentum": momentum,
+                "Momentum_20D": 1.0,
+            }
+            for date, ratio, momentum in zip(
+                dates, [97.0, 98.0, 99.0], [96.0, 98.0, 101.0]
+            )
+        ]
+    )
+
+    comment = get_rrg_comment(metrics)
+
+    assert "停滞（左下）から改善（左上）へ直近で進入した初動セクター: 初動業種" in comment
+    assert "軌跡でもモメンタムが上向いている改善業種: 初動業種" in comment
+
+
+def test_rrg_figure_draws_four_prior_steps_and_only_dynamic_labels(
+    sample_sector_prices,
+):
+    metrics = calculate_sector_metrics(sample_sector_prices)
+    figure = build_rrg_figure(metrics)
+
+    tail_traces = [trace for trace in figure.data if trace.mode == "lines+markers"]
+    point_traces = [trace for trace in figure.data if trace.mode == "markers+text"]
+
+    assert len(tail_traces) == 2
+    assert all(len(trace.x) == 5 for trace in tail_traces)
+    assert len(point_traces) >= 1
+    assert len(figure.layout.annotations) >= 2
+    assert figure.layout.xaxis.range[0] < 100 < figure.layout.xaxis.range[1]
+    assert figure.layout.yaxis.range[0] < 100 < figure.layout.yaxis.range[1]
+
+
 def test_ticker_basket_covers_33_unique_industries_and_tickers():
     tickers = [
         ticker
@@ -179,9 +220,16 @@ def test_metrics_and_charts_scale_to_33_industries():
     )
 
     metrics = calculate_sector_metrics(prices)
+    figure = build_rrg_figure(metrics)
 
     assert metrics["Sector"].nunique() == 33
-    assert sum(len(trace.x) for trace in build_rrg_figure(metrics).data) == 33
+    assert sum(
+        len(trace.x) for trace in figure.data if trace.mode == "markers+text"
+    ) == 33
+    assert sum(
+        len(trace.x) for trace in figure.data if trace.mode == "lines+markers"
+    ) == 33 * 5
+    assert len(figure.layout.annotations) == 33
     assert len(build_ranking_figure(metrics).data[0].y) == 10
     assert len(build_matrix_figure(metrics).data[0].cells.values[0]) == 33
     assert build_matrix_figure(metrics).layout.height >= 33 * 31 + 105
