@@ -30,7 +30,7 @@ from commentator import (
     get_gemini_api_key,
 )
 from sector_flow import (
-    SECTOR_ETFS,
+    TSE33_SECTOR_TICKERS,
     build_matrix_figure,
     build_ranking_figure,
     build_rrg_figure,
@@ -74,32 +74,34 @@ def load_sector_prices() -> pd.DataFrame:
 
 st.header("第0層｜セクター資金循環")
 st.caption(
-    "TOPIX-17連動ETFを東証業種の代理系列として使用し、TOPIX ETF（1306.T）と比較します。"
-    "終値は調整後価格です。"
+    "東証33業種ごとの代表銘柄を等ウェイトで集計した代理系列を、TOPIX ETF（1306.T）と比較します。"
+    "個別株の調整後終値から合成するため、公式業種指数とは異なります。"
 )
 if st.button("セクターデータを更新", key="refresh-sector-data"):
     load_sector_prices.clear()
 
 try:
-    with st.spinner("TOPIX-17セクターETFの日次データを取得しています…"):
+    with st.spinner("東証33業種の代表銘柄データを取得しています…"):
         sector_prices = load_sector_prices()
     sector_metrics = calculate_sector_metrics(sector_prices)
 except (OSError, RuntimeError, ValueError) as exc:
     st.error(f"セクター分析データを準備できませんでした: {exc}")
 else:
-    missing_sectors = sorted(set(SECTOR_ETFS.values()) - set(sector_metrics["Sector"]))
+    missing_sectors = sorted(
+        set(TSE33_SECTOR_TICKERS) - set(sector_metrics["Sector"])
+    )
     if missing_sectors:
         st.warning(
-            "十分な日次データを取得できなかったため、次のセクターを除外しました: "
+            "十分な日次データを取得できなかったため、次の業種を除外しました: "
             + "、".join(missing_sectors)
         )
 
-    st.subheader("RRG｜市場全体の資金循環")
+    st.subheader("東証33業種 RRG｜市場全体の資金循環")
     rrg_figure = build_rrg_figure(sector_metrics)
     st.plotly_chart(
         rrg_figure,
         width="stretch",
-        alt="TOPIX-17各業種の市場に対する相対強度とモメンタム",
+        alt="東証33業種の市場に対する相対強度とモメンタム",
         config={
             "displayModeBar": True,
             "toImageButtonOptions": {
@@ -112,12 +114,12 @@ else:
     )
     st.info(get_rrg_comment(sector_metrics))
 
-    st.subheader("モメンタム TOP5 / ワースト5")
+    st.subheader("東証33業種 モメンタム TOP5 / ワースト5")
     ranking_figure = build_ranking_figure(sector_metrics)
     st.plotly_chart(
         ranking_figure,
         width="stretch",
-        alt="TOPIX-17各業種の20営業日モメンタム上位5業種と下位5業種",
+        alt="東証33業種の代表銘柄バスケットによる20営業日モメンタム上位5業種と下位5業種",
         config={
             "displayModeBar": True,
             "toImageButtonOptions": {
@@ -139,7 +141,7 @@ else:
     st.plotly_chart(
         matrix_figure,
         width="stretch",
-        alt="TOPIX-17各業種の直近・前週・前月リターンと初動判定",
+        alt="東証33業種の直近・前週・前月リターンと初動判定",
         config={
             "displayModeBar": True,
             "toImageButtonOptions": {

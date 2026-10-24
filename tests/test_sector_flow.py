@@ -6,7 +6,7 @@ import pytest
 from sector_flow import (
     MARKET_COLUMN,
     MARKET_TICKER,
-    SECTOR_ETFS,
+    TSE33_SECTOR_TICKERS,
     _extract_close_prices,
     build_matrix_figure,
     build_ranking_figure,
@@ -35,28 +35,35 @@ def test_extract_close_prices_supports_ticker_first_multiindex():
     dates = pd.date_range("2025-01-01", periods=2, freq="B")
     columns = pd.MultiIndex.from_tuples(
         [
-            ("1617.T", "Close"),
+            ("1332.T", "Close"),
+            ("1377.T", "Close"),
             ("1306.T", "Close"),
         ]
     )
-    downloaded = pd.DataFrame([[100, 200], [101, 202]], index=dates, columns=columns)
+    downloaded = pd.DataFrame(
+        [[100, 100, 200], [110, 90, 220]], index=dates, columns=columns
+    )
 
     result = _extract_close_prices(
         downloaded,
-        {"1617.T": "食品", "1306.T": MARKET_COLUMN},
+        {"水産・農林業": ("1332.T", "1377.T")},
     )
 
-    assert result.columns.tolist() == ["食品", MARKET_COLUMN]
-    assert result.loc[dates[-1], "食品"] == pytest.approx(101)
-    assert result.loc[dates[-1], MARKET_COLUMN] == pytest.approx(202)
+    assert result.columns.tolist() == ["水産・農林業", MARKET_COLUMN]
+    assert result.loc[dates[0], "水産・農林業"] == pytest.approx(100)
+    assert result.loc[dates[-1], "水産・農林業"] == pytest.approx(100)
+    assert result.loc[dates[-1], MARKET_COLUMN] == pytest.approx(110)
 
 
 def test_fetch_sector_close_prices_downloads_all_tickers_in_one_request(monkeypatch):
     dates = pd.date_range("2025-01-01", periods=2, freq="B")
-    tickers = [*SECTOR_ETFS, MARKET_TICKER]
+    expected_tickers = {
+        ticker for symbols in TSE33_SECTOR_TICKERS.values() for ticker in symbols
+    } | {MARKET_TICKER}
+    tickers = sorted(expected_tickers)
     columns = pd.MultiIndex.from_product([tickers, ["Close"]])
     downloaded = pd.DataFrame(
-        np.tile(np.arange(1, len(tickers) + 1, dtype=float), (2, 1)),
+        np.tile(np.arange(100, 100 + len(tickers), dtype=float), (2, 1)),
         index=dates,
         columns=columns,
     )
@@ -74,8 +81,9 @@ def test_fetch_sector_close_prices_downloads_all_tickers_in_one_request(monkeypa
     assert calls[0]["period"] == "1y"
     assert calls[0]["interval"] == "1d"
     assert calls[0]["auto_adjust"] is True
-    assert set(calls[0]["tickers"]) == {*SECTOR_ETFS, MARKET_TICKER}
-    assert result.columns.tolist() == [*SECTOR_ETFS.values(), MARKET_COLUMN]
+    assert set(calls[0]["tickers"]) == expected_tickers
+    assert set(result.columns) == {*TSE33_SECTOR_TICKERS, MARKET_COLUMN}
+    assert len(result.columns) == 34
 
 
 def test_calculate_sector_metrics_builds_shared_returns_and_early_flag(
@@ -129,4 +137,51 @@ def test_matrix_comment_reports_early_signal_count(sample_sector_prices):
     metrics = calculate_sector_metrics(sample_sector_prices)
 
     assert get_matrix_comment(metrics).startswith("初動フラグは")
-    assert len(SECTOR_ETFS) == 17
+
+
+def test_ticker_basket_covers_33_unique_industries_and_tickers():
+    tickers = [
+        ticker
+        for symbols in TSE33_SECTOR_TICKERS.values()
+        for ticker in symbols
+    ]
+
+    assert len(TSE33_SECTOR_TICKERS) == 33
+    assert all(len(symbols) >= 2 for symbols in TSE33_SECTOR_TICKERS.values())
+    assert len(tickers) == len(set(tickers))
+
+
+def test_transport_and_insurance_baskets_use_requested_representative_stocks():
+    assert TSE33_SECTOR_TICKERS["輸送用機器"] == (
+        "7203.T",
+        "7267.T",
+        "6902.T",
+    )
+    assert TSE33_SECTOR_TICKERS["保険業"] == (
+        "8766.T",
+        "8725.T",
+        "8630.T",
+    )
+
+
+def test_metrics_and_charts_scale_to_33_industries():
+    dates = pd.date_range("2025-01-01", periods=100, freq="B")
+    trend = np.arange(len(dates), dtype=float)
+    prices = pd.DataFrame(
+        {
+            **{
+                sector: 100 + trend * (0.1 + index * 0.001)
+                for index, sector in enumerate(TSE33_SECTOR_TICKERS)
+            },
+            MARKET_COLUMN: 100 + trend * 0.2,
+        },
+        index=dates,
+    )
+
+    metrics = calculate_sector_metrics(prices)
+
+    assert metrics["Sector"].nunique() == 33
+    assert sum(len(trace.x) for trace in build_rrg_figure(metrics).data) == 33
+    assert len(build_ranking_figure(metrics).data[0].y) == 10
+    assert len(build_matrix_figure(metrics).data[0].cells.values[0]) == 33
+    assert build_matrix_figure(metrics).layout.height >= 33 * 31 + 105
