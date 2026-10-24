@@ -30,9 +30,12 @@ from commentator import (
     get_gemini_api_key,
 )
 from sector_flow import (
+    MATRIX_ACCELERATION_THRESHOLD,
+    MATRIX_SIGNAL_LABELS,
     RANKING_PERIODS,
     TSE33_SECTOR_TICKERS,
     build_matrix_figure,
+    build_matrix_dataframe,
     build_ranking_figure,
     build_rrg_figure,
     calculate_sector_metrics,
@@ -41,6 +44,7 @@ from sector_flow import (
     get_ranking_comment,
     get_rrg_comment,
     get_rrg_selected_sectors,
+    style_matrix_dataframe,
 )
 from watchlist_store import load_watchlist, save_watchlist
 
@@ -184,24 +188,57 @@ else:
 
     st.subheader("多期間比較マトリックス")
     st.caption(
-        "初動フラグは、直近5営業日が上昇・前週5営業日が非上昇・市場比の直近5営業日リターンが"
-        "プラスの場合に点灯します。前月リターンは21〜42営業日前の21営業日リターンです。"
+        "色の濃さはリターンの大きさを示します（緑=プラス、青=マイナス）。"
+        f"「加速初動」は直近5日が前週より{MATRIX_ACCELERATION_THRESHOLD:.1f}"
+        "ポイントを超えて改善した場合です。"
     )
-    matrix_figure = build_matrix_figure(sector_metrics)
-    st.plotly_chart(
-        matrix_figure,
+    matrix_data = build_matrix_dataframe(sector_metrics)
+    selected_signals = st.multiselect(
+        "初動判定で絞り込む",
+        options=[
+            signal
+            for signal in MATRIX_SIGNAL_LABELS
+            if signal in set(matrix_data["初動判定"])
+        ],
+        default=[],
+        help="未選択の場合は全パターンを表示します。",
+        key="matrix-signal-filter",
+    )
+    filtered_matrix = (
+        matrix_data.loc[matrix_data["初動判定"].isin(selected_signals)]
+        if selected_signals
+        else matrix_data
+    )
+    st.dataframe(
+        style_matrix_dataframe(filtered_matrix),
         width="stretch",
-        alt="東証33業種の直近・前週・前月リターンと初動判定",
-        config={
-            "displayModeBar": True,
-            "toImageButtonOptions": {
-                "format": "png",
-                "filename": "sector-comparison-matrix",
-                "scale": 2,
-            },
+        height=min(900, max(350, 42 + len(filtered_matrix) * 35)),
+        column_config={
+            "直近5日リターン": st.column_config.NumberColumn(format="%.2f%%"),
+            "前週5日リターン": st.column_config.NumberColumn(format="%.2f%%"),
+            "前月リターン": st.column_config.NumberColumn(format="%.2f%%"),
         },
-        key="sector-matrix-chart",
+        alt="東証33業種のリターン比較とパターン別初動判定",
     )
+    with st.expander("マトリックスをPNG画像で表示・保存"):
+        matrix_figure = build_matrix_figure(
+            sector_metrics,
+            sectors=list(filtered_matrix.index),
+        )
+        st.plotly_chart(
+            matrix_figure,
+            width="stretch",
+            alt="絞り込み後の東証33業種リターン比較マトリックス",
+            config={
+                "displayModeBar": True,
+                "toImageButtonOptions": {
+                    "format": "png",
+                    "filename": "sector-comparison-matrix",
+                    "scale": 2,
+                },
+            },
+            key="sector-matrix-chart",
+        )
     st.info(get_matrix_comment(sector_metrics))
 
 st.subheader("ウォッチリスト管理")

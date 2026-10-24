@@ -7,12 +7,15 @@ from sector_flow import (
     MARKET_COLUMN,
     MARKET_TICKER,
     RANKING_PERIODS,
+    MATRIX_SIGNAL_LABELS,
     TSE33_SECTOR_TICKERS,
     _extract_close_prices,
     build_matrix_figure,
+    build_matrix_dataframe,
     build_ranking_figure,
     build_rrg_figure,
     calculate_sector_metrics,
+    classify_matrix_signal,
     fetch_sector_close_prices,
     get_matrix_comment,
     get_ranking_comment,
@@ -145,7 +148,77 @@ def test_metric_and_chart_functions_validate_missing_market_column():
 def test_matrix_comment_reports_early_signal_count(sample_sector_prices):
     metrics = calculate_sector_metrics(sample_sector_prices)
 
-    assert get_matrix_comment(metrics).startswith("初動フラグは")
+    assert "本日新たに点灯した" in get_matrix_comment(metrics)
+
+
+@pytest.mark.parametrize(
+    ("returns", "expected"),
+    [
+        ((1.0, -1.0, -3.0), "🔥 転換初動"),
+        ((2.0, 0.5, 1.0), "🚀 加速初動"),
+        ((2.0, 1.0, 0.5), "💪 継続トレンド"),
+        ((-1.0, 1.0, 2.0), "⚠️ ピークアウト"),
+        ((-1.0, -2.0, -3.0), "❄️ 継続停滞"),
+        ((0.0, 1.0, -1.0), "—"),
+        ((np.nan, 1.0, 2.0), "データ不足"),
+    ],
+)
+def test_classify_matrix_signal_patterns(returns, expected):
+    assert classify_matrix_signal(*returns) == expected
+
+
+def test_matrix_dataframe_sorts_latest_return_descending_and_has_flags(
+    sample_sector_prices,
+):
+    matrix = build_matrix_dataframe(calculate_sector_metrics(sample_sector_prices))
+
+    assert matrix.index.is_unique
+    assert matrix["直近5日リターン"].is_monotonic_decreasing
+    assert matrix["初動判定"].isin(MATRIX_SIGNAL_LABELS).all()
+
+
+def test_matrix_comment_lists_new_signals_with_representative_tickers():
+    dates = pd.date_range("2025-01-01", periods=2, freq="B")
+    metrics = pd.DataFrame(
+        [
+            {
+                "Date": date,
+                "Sector": "証券・商品先物取引業",
+                "Return_5D": current,
+                "Return_PreviousWeek": previous,
+                "Return_PreviousMonth": month,
+            }
+            for date, current, previous, month in (
+                (dates[0], -1.0, -0.5, -2.0),
+                (dates[1], 1.2, -0.5, -2.0),
+            )
+        ]
+    )
+
+    comment = get_matrix_comment(metrics)
+
+    assert "🔥 転換初動｜証券・商品先物取引業" in comment
+    assert "代表銘柄: 8601、8604、8697" in comment
+
+
+def test_matrix_comment_does_not_repeat_existing_signal():
+    dates = pd.date_range("2025-01-01", periods=2, freq="B")
+    metrics = pd.DataFrame(
+        [
+            {
+                "Date": date,
+                "Sector": "保険業",
+                "Return_5D": 1.2,
+                "Return_PreviousWeek": -0.5,
+                "Return_PreviousMonth": -2.0,
+            }
+            for date in dates
+        ]
+    )
+
+    assert "新たに点灯した転換初動・加速初動シグナルはありません" in get_matrix_comment(
+        metrics
+    )
 
 
 @pytest.mark.parametrize("period", RANKING_PERIODS.values())

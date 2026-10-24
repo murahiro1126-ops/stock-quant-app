@@ -54,6 +54,16 @@ RANKING_PERIODS: dict[str, int] = {
     "20営業日（1ヶ月）": 20,
     "60営業日（3ヶ月）": 60,
 }
+MATRIX_SIGNAL_LABELS = (
+    "🔥 転換初動",
+    "🚀 加速初動",
+    "💪 継続トレンド",
+    "⚠️ ピークアウト",
+    "❄️ 継続停滞",
+    "—",
+    "データ不足",
+)
+MATRIX_ACCELERATION_THRESHOLD = 1.0
 
 _QUADRANT_COLORS = {
     "Leading": "#2e8b57",
@@ -532,36 +542,133 @@ def build_ranking_figure(metrics: pd.DataFrame, period: int = 20) -> go.Figure:
     return figure
 
 
-def build_matrix_figure(metrics: pd.DataFrame) -> go.Figure:
-    latest = _latest_by_sector(metrics).sort_values(
-        "Momentum_20D", ascending=False, na_position="last"
-    )
-    if latest.empty:
-        raise ValueError("比較マトリックスを描画するデータがありません。")
+def classify_matrix_signal(
+    return_5d: float | None,
+    previous_week: float | None,
+    previous_month: float | None,
+) -> str:
+    returns = (return_5d, previous_week, previous_month)
+    if any(value is None or not np.isfinite(value) for value in returns):
+        return "データ不足"
 
-    values: list[list[str]] = [[str(sector) for sector in latest.index]]
-    for metric in (
+    current, previous, month = (float(value) for value in returns)
+    if month < 0 and current > 0:
+        return "🔥 転換初動"
+    if current > 0 and current - previous > MATRIX_ACCELERATION_THRESHOLD:
+        return "🚀 加速初動"
+    if current > 0 and previous > 0 and month > 0:
+        return "💪 継続トレンド"
+    if month > 0 and previous > 0 and current < 0:
+        return "⚠️ ピークアウト"
+    if current < 0 and previous < 0 and month < 0:
+        return "❄️ 継続停滞"
+    return "—"
+
+
+def build_matrix_dataframe(metrics: pd.DataFrame) -> pd.DataFrame:
+    required = {
         "Return_5D",
         "Return_PreviousWeek",
         "Return_PreviousMonth",
+    }
+    missing = required.difference(metrics.columns)
+    if missing:
+        raise ValueError(
+            "マトリックス指標が不足しています: " + ", ".join(sorted(missing))
+        )
+
+    latest = _latest_by_sector(metrics).copy()
+    if latest.empty:
+        raise ValueError("比較マトリックスを描画するデータがありません。")
+    latest["初動判定"] = [
+        classify_matrix_signal(current, previous, month)
+        for current, previous, month in zip(
+            latest["Return_5D"],
+            latest["Return_PreviousWeek"],
+            latest["Return_PreviousMonth"],
+        )
+    ]
+    matrix = latest.rename(
+        columns={
+            "Return_5D": "直近5日リターン",
+            "Return_PreviousWeek": "前週5日リターン",
+            "Return_PreviousMonth": "前月リターン",
+        }
+    )[
+        [
+            "直近5日リターン",
+            "前週5日リターン",
+            "前月リターン",
+            "初動判定",
+        ]
+    ]
+    return matrix.sort_values(
+        "直近5日リターン", ascending=False, na_position="last"
+    )
+
+
+def _return_cell_style(value: object) -> str:
+    if pd.isna(value) or not np.isfinite(value):
+        return "background-color: #f1f3f5; color: #59636e;"
+    numeric_value = float(value)
+    intensity = min(abs(numeric_value) / 8.0, 1.0)
+    if numeric_value >= 0:
+        pale = np.array([232, 245, 233], dtype=float)
+        saturated = np.array([46, 125, 50], dtype=float)
+        color = pale + (saturated - pale) * intensity
+        text_color = "#ffffff" if intensity > 0.55 else "#1b5e20"
+    else:
+        pale = np.array([227, 242, 253], dtype=float)
+        saturated = np.array([21, 101, 192], dtype=float)
+        color = pale + (saturated - pale) * intensity
+        text_color = "#ffffff" if intensity > 0.55 else "#0d47a1"
+    red, green, blue = color.astype(int)
+    return f"background-color: rgb({red}, {green}, {blue}); color: {text_color};"
+
+
+def style_matrix_dataframe(matrix: pd.DataFrame) -> pd.io.formats.style.Styler:
+    return matrix.style.map(
+        _return_cell_style,
+        subset=["直近5日リターン", "前週5日リターン", "前月リターン"],
+    )
+
+
+def build_matrix_figure(
+    metrics: pd.DataFrame,
+    sectors: list[str] | None = None,
+) -> go.Figure:
+    matrix = build_matrix_dataframe(metrics)
+    if sectors is not None:
+        matrix = matrix.loc[matrix.index.isin(sectors)]
+    values: list[list[str]] = [[str(sector) for sector in matrix.index]]
+    for column in (
+        "直近5日リターン",
+        "前週5日リターン",
+        "前月リターン",
     ):
         values.append(
             [
                 f"{value:+.2f}%"
                 if pd.notna(value) and np.isfinite(value)
                 else "—"
-                for value in latest[metric]
+                for value in matrix[column]
             ]
         )
-    values.append(["初動" if value else "—" for value in latest["EarlySignal"]])
+    values.append(matrix["初動判定"].tolist())
 
     row_colors = [
         "#f5f7fa" if index % 2 == 0 else "#ffffff"
-        for index in range(len(latest))
+        for index in range(len(matrix))
     ]
-    early_colors = [
-        "#f8d7da" if value else row_colors[index]
-        for index, value in enumerate(latest["EarlySignal"])
+    signal_colors = [
+        {
+            "🔥 転換初動": "#f8c471",
+            "🚀 加速初動": "#f5b041",
+            "💪 継続トレンド": "#abebc6",
+            "⚠️ ピークアウト": "#f5b7b1",
+            "❄️ 継続停滞": "#aed6f1",
+        }.get(signal, row_colors[index])
+        for index, signal in enumerate(matrix["初動判定"])
     ]
     figure = go.Figure(
         go.Table(
@@ -585,7 +692,7 @@ def build_matrix_figure(metrics: pd.DataFrame) -> go.Figure:
                     row_colors,
                     row_colors,
                     row_colors,
-                    early_colors,
+                    signal_colors,
                 ],
                 "font": {"color": "#202833", "size": 12, "family": CHART_FONT_FAMILY},
                 "align": ["left", "center", "center", "center", "center"],
@@ -596,7 +703,7 @@ def build_matrix_figure(metrics: pd.DataFrame) -> go.Figure:
     figure.update_layout(
         title="多期間比較マトリックス",
         font={"family": CHART_FONT_FAMILY},
-        height=max(650, 105 + len(latest) * 31),
+        height=max(480, 105 + len(matrix) * 31),
         margin={"t": 65, "b": 15, "l": 10, "r": 10},
     )
     return figure
@@ -816,10 +923,69 @@ def get_ranking_comment(metrics: pd.DataFrame, period: int = 20) -> str:
 
 
 def get_matrix_comment(metrics: pd.DataFrame) -> str:
-    latest = _latest_by_sector(metrics)
-    early_count = int(latest["EarlySignal"].fillna(False).sum())
+    required = {
+        "Date",
+        "Sector",
+        "Return_5D",
+        "Return_PreviousWeek",
+        "Return_PreviousMonth",
+    }
+    missing = required.difference(metrics.columns)
+    if missing:
+        raise ValueError(
+            "マトリックスコメントに必要な指標が不足しています: "
+            + ", ".join(sorted(missing))
+        )
+
+    newly_lit: list[tuple[str, str, float, float, float]] = []
+    for sector, history in metrics.sort_values("Date").groupby(
+        "Sector", sort=False
+    ):
+        recent = history.tail(2)
+        if len(recent) < 2:
+            continue
+        previous, current = recent.iloc[0], recent.iloc[1]
+        signal = classify_matrix_signal(
+            current["Return_5D"],
+            current["Return_PreviousWeek"],
+            current["Return_PreviousMonth"],
+        )
+        previous_signal = classify_matrix_signal(
+            previous["Return_5D"],
+            previous["Return_PreviousWeek"],
+            previous["Return_PreviousMonth"],
+        )
+        if (
+            signal in {"🔥 転換初動", "🚀 加速初動"}
+            and signal != previous_signal
+        ):
+            newly_lit.append(
+                (
+                    str(sector),
+                    signal,
+                    float(current["Return_5D"]),
+                    float(current["Return_PreviousWeek"]),
+                    float(current["Return_PreviousMonth"]),
+                )
+            )
+
+    priority = {"🔥 転換初動": 0, "🚀 加速初動": 1}
+    newly_lit.sort(key=lambda item: (priority[item[1]], item[0]))
+    if not newly_lit:
+        return (
+            "本日新たに点灯した転換初動・加速初動シグナルはありません。"
+            "初動判定は代表銘柄バスケットのリターンから算出しています。"
+        )
+
+    bullets = "\n".join(
+        f"- **{signal}｜{sector}**: 直近5日 {return_5d:+.2f}%、"
+        f"前週 {previous_week:+.2f}%、前月 {previous_month:+.2f}%。"
+        f"代表銘柄: {_format_sector_tickers(sector)}"
+        for sector, signal, return_5d, previous_week, previous_month in newly_lit
+    )
     return (
-        f"初動フラグは{early_count}業種です。"
-        "直近5日が上昇、前週5日が非上昇、かつ市場比の直近5日リターンが"
-        "プラスの場合に点灯します。"
+        "本日新たに点灯した初動シグナルです。個別銘柄の価格・出来高や材料を"
+        "確認する候補としてご覧ください。\n\n"
+        f"{bullets}\n\n"
+        "※代表銘柄は業種の参考バスケットであり、売買推奨ではありません。"
     )
