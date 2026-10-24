@@ -29,6 +29,17 @@ from commentator import (
     generate_postprime_text,
     get_gemini_api_key,
 )
+from sector_flow import (
+    SECTOR_ETFS,
+    build_matrix_figure,
+    build_ranking_figure,
+    build_rrg_figure,
+    calculate_sector_metrics,
+    fetch_sector_close_prices,
+    get_matrix_comment,
+    get_ranking_comment,
+    get_rrg_comment,
+)
 from watchlist_store import load_watchlist, save_watchlist
 
 st.set_page_config(page_title="日本株シグナル検証", page_icon="📈", layout="wide")
@@ -55,6 +66,91 @@ def load_analysis(ticker: str) -> pd.DataFrame:
 def load_trends(keyword: str) -> dict:
     return get_google_trends_sentiment(keyword)
 
+
+@st.cache_data(ttl=3600, max_entries=1, show_spinner=False)
+def load_sector_prices() -> pd.DataFrame:
+    return fetch_sector_close_prices()
+
+
+st.header("第0層｜セクター資金循環")
+st.caption(
+    "TOPIX-17連動ETFを東証業種の代理系列として使用し、TOPIX ETF（1306.T）と比較します。"
+    "終値は調整後価格です。"
+)
+if st.button("セクターデータを更新", key="refresh-sector-data"):
+    load_sector_prices.clear()
+
+try:
+    with st.spinner("TOPIX-17セクターETFの日次データを取得しています…"):
+        sector_prices = load_sector_prices()
+    sector_metrics = calculate_sector_metrics(sector_prices)
+except (OSError, RuntimeError, ValueError) as exc:
+    st.error(f"セクター分析データを準備できませんでした: {exc}")
+else:
+    missing_sectors = sorted(set(SECTOR_ETFS.values()) - set(sector_metrics["Sector"]))
+    if missing_sectors:
+        st.warning(
+            "十分な日次データを取得できなかったため、次のセクターを除外しました: "
+            + "、".join(missing_sectors)
+        )
+
+    st.subheader("RRG｜市場全体の資金循環")
+    rrg_figure = build_rrg_figure(sector_metrics)
+    st.plotly_chart(
+        rrg_figure,
+        width="stretch",
+        alt="TOPIX-17各業種の市場に対する相対強度とモメンタム",
+        config={
+            "displayModeBar": True,
+            "toImageButtonOptions": {
+                "format": "png",
+                "filename": "sector-rrg",
+                "scale": 2,
+            },
+        },
+        key="sector-rrg-chart",
+    )
+    st.info(get_rrg_comment(sector_metrics))
+
+    st.subheader("モメンタム TOP5 / ワースト5")
+    ranking_figure = build_ranking_figure(sector_metrics)
+    st.plotly_chart(
+        ranking_figure,
+        width="stretch",
+        alt="TOPIX-17各業種の20営業日モメンタム上位5業種と下位5業種",
+        config={
+            "displayModeBar": True,
+            "toImageButtonOptions": {
+                "format": "png",
+                "filename": "sector-momentum-ranking",
+                "scale": 2,
+            },
+        },
+        key="sector-ranking-chart",
+    )
+    st.info(get_ranking_comment(sector_metrics))
+
+    st.subheader("多期間比較マトリックス")
+    st.caption(
+        "初動フラグは、直近5営業日が上昇・前週5営業日が非上昇・市場比の直近5営業日リターンが"
+        "プラスの場合に点灯します。前月リターンは21〜42営業日前の21営業日リターンです。"
+    )
+    matrix_figure = build_matrix_figure(sector_metrics)
+    st.plotly_chart(
+        matrix_figure,
+        width="stretch",
+        alt="TOPIX-17各業種の直近・前週・前月リターンと初動判定",
+        config={
+            "displayModeBar": True,
+            "toImageButtonOptions": {
+                "format": "png",
+                "filename": "sector-comparison-matrix",
+                "scale": 2,
+            },
+        },
+        key="sector-matrix-chart",
+    )
+    st.info(get_matrix_comment(sector_metrics))
 
 st.subheader("ウォッチリスト管理")
 try:
