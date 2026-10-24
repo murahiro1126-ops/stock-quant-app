@@ -15,6 +15,7 @@ from sector_flow import (
     fetch_sector_close_prices,
     get_matrix_comment,
     get_rrg_comment,
+    get_rrg_selected_sectors,
 )
 
 
@@ -163,21 +164,48 @@ def test_rrg_comment_detects_recent_lagging_to_improving_transition():
     assert "軌跡でもモメンタムが上向いている改善業種: 初動業種" in comment
 
 
-def test_rrg_figure_draws_four_prior_steps_and_only_dynamic_labels(
+def test_rrg_figure_hides_tails_by_default_and_highlights_selected_sector(
     sample_sector_prices,
 ):
     metrics = calculate_sector_metrics(sample_sector_prices)
-    figure = build_rrg_figure(metrics)
+    default_figure = build_rrg_figure(metrics)
+    highlighted_figure = build_rrg_figure(metrics, {"食品"})
 
-    tail_traces = [trace for trace in figure.data if trace.mode == "lines+markers"]
-    point_traces = [trace for trace in figure.data if trace.mode == "markers+text"]
+    default_tail_traces = [
+        trace for trace in default_figure.data if trace.mode == "lines+markers"
+    ]
+    highlighted_tail_traces = [
+        trace for trace in highlighted_figure.data if trace.mode == "lines+markers"
+    ]
+    point_traces = [
+        trace for trace in default_figure.data if trace.mode == "markers+text"
+    ]
 
-    assert len(tail_traces) == 2
-    assert all(len(trace.x) == 5 for trace in tail_traces)
+    assert not default_tail_traces
+    assert len(highlighted_tail_traces) == 1
+    assert len(highlighted_tail_traces[0].x) == 5
+    assert highlighted_tail_traces[0].hoverinfo == "skip"
+    marker_colors = highlighted_tail_traces[0].marker.color
+    assert "0.16)" in marker_colors[0]
+    assert "1.00)" in marker_colors[-1]
     assert len(point_traces) >= 1
-    assert len(figure.layout.annotations) >= 2
-    assert figure.layout.xaxis.range[0] < 100 < figure.layout.xaxis.range[1]
-    assert figure.layout.yaxis.range[0] < 100 < figure.layout.yaxis.range[1]
+    assert len(default_figure.layout.annotations) == 0
+    assert len(highlighted_figure.layout.annotations) == 1
+    assert default_figure.layout.xaxis.range[0] < 100 < default_figure.layout.xaxis.range[1]
+    assert default_figure.layout.yaxis.range[0] < 100 < default_figure.layout.yaxis.range[1]
+
+
+def test_rrg_selected_sectors_reads_plotly_selection_customdata():
+    selection_state = {
+        "selection": {
+            "points": [
+                {"customdata": ["輸送用機器", "改善（左上）", "+3.4%"]},
+                {"customdata": ["保険業", "先導（右上）", "+1.2%"]},
+            ]
+        }
+    }
+
+    assert get_rrg_selected_sectors(selection_state) == {"輸送用機器", "保険業"}
 
 
 def test_ticker_basket_covers_33_unique_industries_and_tickers():
@@ -226,10 +254,12 @@ def test_metrics_and_charts_scale_to_33_industries():
     assert sum(
         len(trace.x) for trace in figure.data if trace.mode == "markers+text"
     ) == 33
+    assert not [trace for trace in figure.data if trace.mode == "lines+markers"]
+    selected_figure = build_rrg_figure(metrics, {"水産・農林業", "鉱業"})
     assert sum(
-        len(trace.x) for trace in figure.data if trace.mode == "lines+markers"
-    ) == 33 * 5
-    assert len(figure.layout.annotations) == 33
+        len(trace.x) for trace in selected_figure.data if trace.mode == "lines+markers"
+    ) == 2 * 5
+    assert len(selected_figure.layout.annotations) == 2
     assert len(build_ranking_figure(metrics).data[0].y) == 10
     assert len(build_matrix_figure(metrics).data[0].cells.values[0]) == 33
     assert build_matrix_figure(metrics).layout.height >= 33 * 31 + 105

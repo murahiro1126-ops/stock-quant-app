@@ -39,6 +39,7 @@ from sector_flow import (
     get_matrix_comment,
     get_ranking_comment,
     get_rrg_comment,
+    get_rrg_selected_sectors,
 )
 from watchlist_store import load_watchlist, save_watchlist
 
@@ -109,7 +110,20 @@ else:
         "資金流入の初動候補として注目されます。"
         "軌跡と矢印は直近4営業日の移動方向を示します。"
     )
-    rrg_figure = build_rrg_figure(sector_metrics)
+    rrg_chart_key = "sector-rrg-chart"
+    rrg_tail_sectors = st.multiselect(
+        "常時テールを表示する業種",
+        options=sorted(sector_metrics["Sector"].unique()),
+        default=[],
+        help="指定した業種の過去4営業日の軌跡を常時表示します。複数選択できます。",
+        key="rrg-tail-sectors",
+    )
+    selected_points_state = st.session_state.get(rrg_chart_key)
+    selected_sectors = get_rrg_selected_sectors(selected_points_state)
+    highlighted_sectors = set(rrg_tail_sectors) | selected_sectors
+    st.caption("最新のドットをクリックしても、その業種のテールを表示できます。")
+
+    rrg_figure = build_rrg_figure(sector_metrics, highlighted_sectors)
     st.plotly_chart(
         rrg_figure,
         width="stretch",
@@ -122,8 +136,15 @@ else:
                 "scale": 2,
             },
         },
-        key="sector-rrg-chart",
+        key=rrg_chart_key,
+        on_select="rerun",
+        selection_mode="points",
     )
+    if selected_sectors:
+        st.caption(
+            "クリック選択中: "
+            + "、".join(sorted(selected_sectors & set(sector_metrics["Sector"])))
+        )
     st.info(get_rrg_comment(sector_metrics))
 
     st.subheader("東証33業種 モメンタム TOP5 / ワースト5")

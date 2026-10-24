@@ -237,7 +237,32 @@ def _rrg_quadrant(rs_ratio: float, rs_momentum: float) -> str:
     return "Lagging"
 
 
-def build_rrg_figure(metrics: pd.DataFrame) -> go.Figure:
+def get_rrg_selected_sectors(selection_state: object) -> set[str]:
+    """Read selected industry names from Streamlit's Plotly selection state."""
+    if isinstance(selection_state, Mapping):
+        selection = selection_state.get("selection", {})
+    else:
+        selection = getattr(selection_state, "selection", {})
+
+    if isinstance(selection, Mapping):
+        points = selection.get("points", [])
+    else:
+        points = getattr(selection, "points", [])
+
+    selected: set[str] = set()
+    for point in points:
+        if not isinstance(point, Mapping):
+            continue
+        customdata = point.get("customdata")
+        if isinstance(customdata, (list, tuple, np.ndarray)) and len(customdata) > 0:
+            selected.add(str(customdata[0]))
+    return selected
+
+
+def build_rrg_figure(
+    metrics: pd.DataFrame,
+    highlighted_sectors: set[str] | frozenset[str] = frozenset(),
+) -> go.Figure:
     latest = _latest_by_sector(metrics).dropna(subset=["RS_Ratio", "RS_Momentum"])
     if latest.empty:
         raise ValueError("RRGを描画できる相対指標データがありません。")
@@ -272,7 +297,7 @@ def build_rrg_figure(metrics: pd.DataFrame) -> go.Figure:
             .dropna(subset=["RS_Ratio", "RS_Momentum"])
             .tail(5)
         )
-        if len(tail) < 2:
+        if len(tail) < 2 or sector not in highlighted_sectors:
             continue
         quadrant = _rrg_quadrant(
             float(tail["RS_Ratio"].iloc[-1]),
@@ -291,16 +316,15 @@ def build_rrg_figure(metrics: pd.DataFrame) -> go.Figure:
                 mode="lines+markers",
                 name=f"{sector} 軌跡",
                 showlegend=False,
-                line={"color": _QUADRANT_COLORS[quadrant], "width": 1.5},
+                line={"color": _QUADRANT_COLORS[quadrant], "width": 2.4},
                 marker={
-                    "color": _QUADRANT_COLORS[quadrant],
-                    "size": [4, 5, 6, 7, 8][-len(tail) :],
+                    "color": [
+                        _hex_to_rgba(_QUADRANT_COLORS[quadrant], alpha)
+                        for alpha in (0.16, 0.32, 0.52, 0.76, 1.0)[-len(tail) :]
+                    ],
+                    "size": [5, 6, 7, 8, 10][-len(tail) :],
                 },
-                hovertemplate=(
-                    "%{customdata[1]}<br>日付: %{customdata[0]}"
-                    "<br>RS-Ratio: %{x:.2f}"
-                    "<br>RS-Momentum: %{y:.2f}<extra>移動軌跡</extra>"
-                ),
+                hoverinfo="skip",
             )
         )
         figure.add_annotation(
@@ -315,16 +339,16 @@ def build_rrg_figure(metrics: pd.DataFrame) -> go.Figure:
             text="",
             showarrow=True,
             arrowhead=2,
-            arrowsize=0.8,
-            arrowwidth=1.2,
+            arrowsize=1,
+            arrowwidth=2,
             arrowcolor=_QUADRANT_COLORS[quadrant],
         )
 
     quadrants = (
-        ("Leading", x_values.ge(100) & y_values.ge(100)),
-        ("Weakening", x_values.ge(100) & y_values.lt(100)),
-        ("Lagging", x_values.lt(100) & y_values.lt(100)),
-        ("Improving", x_values.lt(100) & y_values.ge(100)),
+        ("Leading", latest_x.ge(100) & latest_y.ge(100)),
+        ("Weakening", latest_x.ge(100) & latest_y.lt(100)),
+        ("Lagging", latest_x.lt(100) & latest_y.lt(100)),
+        ("Improving", latest_x.lt(100) & latest_y.ge(100)),
     )
     for label, condition in quadrants:
         selected = latest.loc[condition]
@@ -358,6 +382,7 @@ def build_rrg_figure(metrics: pd.DataFrame) -> go.Figure:
                     "color": _QUADRANT_COLORS[label],
                     "line": {"color": "white", "width": 1},
                 },
+                hoveron="points",
                 hovertemplate=(
                     "業種: %{customdata[0]}"
                     "<br>象限: %{customdata[1]}"
@@ -397,10 +422,19 @@ def build_rrg_figure(metrics: pd.DataFrame) -> go.Figure:
         font={"family": CHART_FONT_FAMILY},
         height=560,
         hovermode="closest",
+        hoverdistance=20,
         margin={"t": 70, "b": 50, "l": 70, "r": 30},
         legend={"orientation": "h", "y": 1.08},
     )
     return figure
+
+
+def _hex_to_rgba(color: str, alpha: float) -> str:
+    """Convert a #RRGGBB color to rgba for the RRG tail gradient."""
+    red, green, blue = (
+        int(color[index : index + 2], 16) for index in (1, 3, 5)
+    )
+    return f"rgba({red}, {green}, {blue}, {alpha:.2f})"
 
 
 def build_ranking_figure(metrics: pd.DataFrame) -> go.Figure:
