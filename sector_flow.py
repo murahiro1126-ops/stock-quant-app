@@ -237,6 +237,13 @@ def _rrg_quadrant(rs_ratio: float, rs_momentum: float) -> str:
     return "Lagging"
 
 
+def _format_sector_tickers(sector: str) -> str:
+    tickers = TSE33_SECTOR_TICKERS.get(sector, ())
+    if not tickers:
+        return "代表銘柄情報なし"
+    return "、".join(ticker.removesuffix(".T") for ticker in tickers)
+
+
 def get_rrg_selected_sectors(selection_state: object) -> set[str]:
     """Read selected industry names from Streamlit's Plotly selection state."""
     if isinstance(selection_state, Mapping):
@@ -553,54 +560,143 @@ def get_rrg_comment(metrics: pd.DataFrame) -> str:
         raise ValueError("RRGコメントには Date / Sector / RS_Ratio / RS_Momentum が必要です。")
 
     valid = metrics.dropna(subset=["RS_Ratio", "RS_Momentum"]).sort_values("Date")
-    latest = _latest_by_sector(valid)
-    improving_mask = latest["RS_Ratio"].lt(100) & latest["RS_Momentum"].ge(100)
-    improving = latest.loc[improving_mask]
-    leading = int(
-        (latest["RS_Ratio"].ge(100) & latest["RS_Momentum"].ge(100)).sum()
-    )
-    stagnating = int(
-        (latest["RS_Ratio"].lt(100) & latest["RS_Momentum"].lt(100)).sum()
-    )
-
     histories = {
         sector: group.sort_values("Date")
         for sector, group in valid.groupby("Sector", sort=False)
     }
+    quadrant_counts = {quadrant: 0 for quadrant in _QUADRANT_LABELS}
+    quadrant_shifts: list[tuple[str, str, str]] = []
     initial_entries: list[str] = []
-    rising_improving: list[str] = []
-    for sector in improving.index:
-        history = histories[str(sector)].tail(2)
-        if len(history) < 2:
-            continue
-        previous = history.iloc[-2]
-        if previous["RS_Ratio"] < 100 and previous["RS_Momentum"] < 100:
-            initial_entries.append(str(sector))
-        if history["RS_Momentum"].iloc[-1] > history["RS_Momentum"].iloc[-2]:
-            rising_improving.append(str(sector))
+    improving_candidates: list[tuple[str, float, float, float]] = []
+    distances: dict[str, float] = {}
+    speeds: dict[str, float] = {}
+    accelerations: dict[str, float] = {}
+
+    for sector, history in histories.items():
+        recent = history.tail(5)
+        current = recent.iloc[-1]
+        current_quadrant = _rrg_quadrant(
+            float(current["RS_Ratio"]), float(current["RS_Momentum"])
+        )
+        quadrant_counts[current_quadrant] += 1
+
+        if len(recent) > 1:
+            previous = recent.iloc[0]
+            previous_quadrant = _rrg_quadrant(
+                float(previous["RS_Ratio"]), float(previous["RS_Momentum"])
+            )
+            if previous_quadrant != current_quadrant:
+                quadrant_shifts.append(
+                    (str(sector), previous_quadrant, current_quadrant)
+                )
+            if (
+                previous_quadrant == "Lagging"
+                and current_quadrant == "Improving"
+            ):
+                initial_entries.append(str(sector))
+
+        if len(recent) > 1:
+            x_delta = recent["RS_Ratio"].astype(float).diff()
+            y_delta = recent["RS_Momentum"].astype(float).diff()
+            distance = float(np.hypot(x_delta, y_delta).iloc[1:].sum())
+            steps = len(recent) - 1
+            distances[str(sector)] = distance
+            speeds[str(sector)] = distance / steps
+            if steps > 1:
+                acceleration = np.hypot(x_delta.diff(), y_delta.diff()).iloc[2:]
+                accelerations[str(sector)] = float(acceleration.mean())
+            else:
+                accelerations[str(sector)] = 0.0
+
+        if current_quadrant == "Improving":
+            improving_candidates.append(
+                (
+                    str(sector),
+                    distances.get(str(sector), 0.0),
+                    speeds.get(str(sector), 0.0),
+                    accelerations.get(str(sector), 0.0),
+                )
+            )
+
+    quadrant_shifts.sort(
+        key=lambda item: distances.get(item[0], 0.0),
+        reverse=True,
+    )
+    if quadrant_shifts:
+        shift_summary = "直近最大4営業日の象限シフト: " + "、".join(
+            f"{sector}（{_QUADRANT_LABELS[old]}→{_QUADRANT_LABELS[new]}）"
+            for sector, old, new in quadrant_shifts[:3]
+        ) + "。"
+    else:
+        shift_summary = "直近最大4営業日で象限を移動した業種はありません。"
 
     if initial_entries:
         initial_signal = (
-            "停滞（左下）から改善（左上）へ直近で進入した初動セクター: "
-            + "、".join(initial_entries)
+            "🔥 【資金流入の初動候補】停滞（左下）から改善（左上）へ"
+            "直近最大4営業日でシフトした業種: "
+            + "、".join(
+                f"{sector}（代表: {_format_sector_tickers(sector)}）"
+                for sector in initial_entries[:3]
+            )
             + "。"
         )
     else:
         initial_signal = (
-            "停滞（左下）から改善（左上）へ直近で進入した初動セクターはありません。"
+            "直近最大4営業日で停滞（左下）から改善（左上）へシフトした"
+            "初動候補はありません。"
         )
 
-    vector_summary = (
-        "軌跡でもモメンタムが上向いている改善業種: "
-        + "、".join(rising_improving)
-        + "。"
-        if rising_improving
-        else "改善ゾーン内でモメンタムが上向く業種はありません。"
+    ranked_distances = sorted(
+        distances.items(), key=lambda item: item[1], reverse=True
     )
+    if ranked_distances:
+        fastest_sector, fastest_distance = ranked_distances[0]
+        speed_summary = (
+            f"テール移動距離の最大は「{fastest_sector}」の{fastest_distance:.2f}"
+            f"ポイント（1営業日平均{speeds[fastest_sector]:.2f}ポイント、"
+            f"平均加速度{accelerations[fastest_sector]:.2f}ポイント/営業日²）で、"
+            f"代表銘柄は {_format_sector_tickers(fastest_sector)} です。"
+        )
+    else:
+        fastest_sector = None
+        speed_summary = "移動距離を算出できるテールデータがありません。"
+
+    improving_candidates.sort(key=lambda item: item[1], reverse=True)
+    if improving_candidates:
+        improving_summary = "改善ゾーンの注目候補: " + "、".join(
+            f"{sector}（代表: {_format_sector_tickers(sector)}）"
+            for sector, _, _, _ in improving_candidates[:3]
+        ) + "。"
+        inflow_sector = improving_candidates[0]
+        inflow_signal = (
+            f"改善ゾーンでは「{inflow_sector[0]}」の移動距離が最大で、"
+            f"相対指標の勢いが強い状態です（平均加速度{inflow_sector[3]:.2f}"
+            "ポイント/営業日²）。"
+        )
+    else:
+        improving_summary = "現在、改善ゾーンにある業種はありません。"
+        inflow_sector = None
+        inflow_signal = "改善ゾーン内で資金流入の初動候補となる業種は確認できません。"
+
+    if inflow_sector is not None:
+        action = (
+            f"アクション案: 「{inflow_sector[0]}」の代表銘柄 "
+            f"({_format_sector_tickers(inflow_sector[0])}) を監視候補に加え、"
+            "価格・出来高の継続性と個別材料を確認してください。"
+        )
+    else:
+        action = (
+            "アクション案: 改善ゾーンへの移行が確認できるまで、"
+            "代表銘柄の価格・出来高を継続観察してください。"
+        )
+
     return (
-        f"現在は先導（右上）が{leading}業種、改善（左上）が{len(improving)}業種、"
-        f"停滞（左下）が{stagnating}業種です。{initial_signal}{vector_summary}"
-        "座標の直近4営業日の軌跡と矢印で移動方向を示しています。"
+        f"先導 {quadrant_counts['Leading']}業種 / 改善 {quadrant_counts['Improving']}業種 / "
+        f"停滞 {quadrant_counts['Lagging']}業種 / 減速 {quadrant_counts['Weakening']}業種。"
+        f"{shift_summary}{initial_signal}{speed_summary}{improving_summary}"
+        f"{inflow_signal}{action}"
+        "※移動距離は相対強度・相対モメンタム座標上の変化であり、"
+        "実際の資金流出入や売買推奨を示すものではありません。"
     )
 
 

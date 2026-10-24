@@ -147,21 +147,27 @@ def test_rrg_comment_detects_recent_lagging_to_improving_transition():
         [
             {
                 "Date": date,
-                "Sector": "初動業種",
+                "Sector": "証券・商品先物取引業",
                 "RS_Ratio": ratio,
                 "RS_Momentum": momentum,
                 "Momentum_20D": 1.0,
             }
             for date, ratio, momentum in zip(
-                dates, [97.0, 98.0, 99.0], [96.0, 98.0, 101.0]
+                dates, [97.0, 97.5, 99.0], [96.0, 99.0, 101.0]
             )
         ]
     )
 
     comment = get_rrg_comment(metrics)
 
-    assert "停滞（左下）から改善（左上）へ直近で進入した初動セクター: 初動業種" in comment
-    assert "軌跡でもモメンタムが上向いている改善業種: 初動業種" in comment
+    assert "直近最大4営業日の象限シフト" in comment
+    assert "停滞（左下）→改善（左上）" in comment
+    assert "【資金流入の初動候補】" in comment
+    assert "証券・商品先物取引業（代表: 8601、8604、8697）" in comment
+    assert "移動距離の最大は「証券・商品先物取引業」" in comment
+    assert "平均加速度1.41ポイント/営業日²" in comment
+    assert "価格・出来高の継続性" in comment
+    assert "実際の資金流出入や売買推奨を示すものではありません" in comment
 
 
 def test_rrg_figure_hides_tails_by_default_and_highlights_selected_sector(
