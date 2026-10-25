@@ -39,7 +39,7 @@ from sector_flow import (
     build_ranking_figure,
     build_rrg_figure,
     calculate_sector_metrics,
-    fetch_sector_close_prices,
+    fetch_basket_close_prices,
     get_matrix_comment,
     get_ranking_comment,
     get_rrg_comment,
@@ -59,6 +59,45 @@ st.caption(
 if GEMINI_API_KEY is None:
     st.caption("GEMINI_API_KEY未設定のため、解説と投稿文はルールベースで表示します。")
 
+try:
+    active_watchlist = load_watchlist()
+except (OSError, ValueError) as exc:
+    active_watchlist = {}
+    watchlist_error = str(exc)
+else:
+    watchlist_error = None
+
+ANALYSIS_MODES = (
+    "🌐 東証33業種モード（PostPrime投稿・市場全体分析用）",
+    "💼 Myポートフォリオモード（プライベート・保有/注目銘柄分析用）",
+)
+selected_mode = st.radio(
+    "分析対象モード",
+    options=ANALYSIS_MODES,
+    horizontal=True,
+    key="analysis-mode",
+    help="第0層のRRG・モメンタム・マトリックスと第1層のスクリーニング対象を一括で切り替えます。",
+)
+is_portfolio_mode = selected_mode == ANALYSIS_MODES[1]
+mode_key = "portfolio" if is_portfolio_mode else "tse33"
+mode_name = "Myポートフォリオ" if is_portfolio_mode else "東証33業種"
+if is_portfolio_mode and watchlist_error is not None:
+    st.error(f"ウォッチリストを読み込めません: {watchlist_error}")
+
+if is_portfolio_mode:
+    analysis_baskets = {
+        f"{company}（{ticker.removesuffix('.T')}）": (ticker,)
+        for ticker, company in active_watchlist.items()
+    }
+    screening_universe = dict(active_watchlist)
+else:
+    analysis_baskets = dict(TSE33_SECTOR_TICKERS)
+    screening_universe = {
+        ticker: f"{sector}代表銘柄"
+        for sector, tickers in TSE33_SECTOR_TICKERS.items()
+        for ticker in tickers
+    }
+
 
 @st.cache_data(ttl=900, show_spinner=False)
 def load_analysis(ticker: str) -> pd.DataFrame:
@@ -73,36 +112,57 @@ def load_trends(keyword: str) -> dict:
     return get_google_trends_sentiment(keyword)
 
 
-@st.cache_data(ttl=3600, max_entries=1, show_spinner=False)
-def load_sector_prices() -> pd.DataFrame:
-    return fetch_sector_close_prices()
+@st.cache_data(ttl=3600, max_entries=2, show_spinner=False)
+def load_universe_prices(
+    baskets: tuple[tuple[str, tuple[str, ...]], ...],
+) -> pd.DataFrame:
+    return fetch_basket_close_prices(dict(baskets))
 
 
-st.header("第0層｜セクター資金循環")
-st.caption(
-    "東証33業種ごとの代表銘柄を等ウェイトで集計した代理系列を、TOPIX ETF（1306.T）と比較します。"
-    "個別株の調整後終値から合成するため、公式業種指数とは異なります。"
-)
-if st.button("セクターデータを更新", key="refresh-sector-data"):
-    load_sector_prices.clear()
+st.header(f"第0層｜{mode_name} 資金循環")
+if is_portfolio_mode:
+    st.caption(
+        "watchlist.jsonの各銘柄を個別系列としてTOPIX ETF（1306.T）と比較します。"
+        "銘柄名とコードはRRG・ランキング・マトリックスの対象ラベルに使用します。"
+    )
+else:
+    st.caption(
+        "東証33業種ごとの代表銘柄を等ウェイトで集計した代理系列を、TOPIX ETF（1306.T）と比較します。"
+        "個別株の調整後終値から合成するため、公式業種指数とは異なります。"
+    )
+if st.button(
+    f"{mode_name}データを更新",
+    key=f"refresh-universe-data-{mode_key}",
+):
+    load_universe_prices.clear()
 
 try:
-    with st.spinner("東証33業種の代表銘柄データを取得しています…"):
-        sector_prices = load_sector_prices()
-    sector_metrics = calculate_sector_metrics(sector_prices)
-except (OSError, RuntimeError, ValueError) as exc:
-    st.error(f"セクター分析データを準備できませんでした: {exc}")
-else:
-    missing_sectors = sorted(
-        set(TSE33_SECTOR_TICKERS) - set(sector_metrics["Sector"])
+    if not analysis_baskets:
+        raise ValueError("ウォッチリストに分析対象銘柄がありません。")
+    with st.spinner(f"{mode_name}の株価データを取得しています…"):
+        universe_prices = load_universe_prices(
+            tuple(
+                (name, tuple(tickers))
+                for name, tickers in analysis_baskets.items()
+            )
+        )
+    sector_metrics = calculate_sector_metrics(
+        universe_prices,
+        constituents=analysis_baskets,
     )
-    if missing_sectors:
+except (OSError, RuntimeError, ValueError) as exc:
+    st.error(f"{mode_name}の分析データを準備できませんでした: {exc}")
+else:
+    missing_targets = sorted(
+        set(analysis_baskets) - set(sector_metrics["Sector"])
+    )
+    if missing_targets:
         st.warning(
-            "十分な日次データを取得できなかったため、次の業種を除外しました: "
-            + "、".join(missing_sectors)
+            "十分な日次データを取得できなかったため、次の対象を除外しました: "
+            + "、".join(missing_targets)
         )
 
-    st.subheader("東証33業種 RRG｜市場全体の資金循環")
+    st.subheader(f"{mode_name} RRG｜市場に対する相対強度")
     st.info(
         "**RRGの指標とグラフの見方**\n\n"
         "- **横軸 RS-Ratio:** TOPIX対比の相対強度を100基準に正規化した値です。"
@@ -112,32 +172,32 @@ else:
         "- **象限の循環:** 停滞（左下）→ 改善（左上）→ 先導（右上）→ "
         "減速（右下）→ 停滞の順に、時計回りに移る傾向があります。\n"
         "- **改善（左上）:** 相対強度はまだ100未満ですが勢いが上向いている領域で、"
-        "資金流入の初動候補として注目されます。"
+        "相対強度上昇の初動候補として注目されます。"
         "軌跡と矢印は直近4営業日の移動方向を示します。"
     )
-    rrg_chart_key = "sector-rrg-chart"
+    rrg_chart_key = f"universe-rrg-chart-{mode_key}"
     rrg_tail_sectors = st.multiselect(
-        "常時テールを表示する業種",
+        "常時テールを表示する対象",
         options=sorted(sector_metrics["Sector"].unique()),
         default=[],
-        help="指定した業種の過去4営業日の軌跡を常時表示します。複数選択できます。",
-        key="rrg-tail-sectors",
+        help="指定した対象の過去4営業日の軌跡を常時表示します。複数選択できます。",
+        key=f"rrg-tail-targets-{mode_key}",
     )
     selected_points_state = st.session_state.get(rrg_chart_key)
     selected_sectors = get_rrg_selected_sectors(selected_points_state)
     highlighted_sectors = set(rrg_tail_sectors) | selected_sectors
-    st.caption("最新のドットをクリックしても、その業種のテールを表示できます。")
+    st.caption("最新のドットをクリックしても、その対象のテールを表示できます。")
 
     rrg_figure = build_rrg_figure(sector_metrics, highlighted_sectors)
     st.plotly_chart(
         rrg_figure,
         width="stretch",
-        alt="東証33業種の市場に対する相対強度とモメンタム",
+        alt=f"{mode_name}の市場に対する相対強度とモメンタム",
         config={
             "displayModeBar": True,
             "toImageButtonOptions": {
                 "format": "png",
-                "filename": "sector-rrg",
+                "filename": f"{mode_key}-rrg",
                 "scale": 2,
             },
         },
@@ -152,18 +212,18 @@ else:
         )
     st.info(get_rrg_comment(sector_metrics))
 
-    st.subheader("東証33業種 モメンタム TOP5 / ワースト5")
+    st.subheader(f"{mode_name} モメンタム TOP5 / ワースト5")
     ranking_period_label = st.segmented_control(
         "ランキング期間",
         options=list(RANKING_PERIODS),
         default="20営業日（1ヶ月）",
-        key="sector-ranking-period",
+        key=f"universe-ranking-period-{mode_key}",
     )
     if ranking_period_label is None:
         ranking_period_label = "20営業日（1ヶ月）"
     ranking_period = RANKING_PERIODS[ranking_period_label]
     st.caption(
-        "赤は選択期間の上位5業種、青は下位5業種です。"
+        "赤は選択期間の上位5対象、青は下位5対象です。"
         "灰色の破線は0%、紫の点線は同期間のTOPIXリターンです。"
     )
     ranking_figure = build_ranking_figure(sector_metrics, ranking_period)
@@ -171,22 +231,22 @@ else:
         ranking_figure,
         width="stretch",
         alt=(
-            f"東証33業種の代表銘柄バスケットによる{ranking_period}営業日"
-            "リターン上位5業種と下位5業種"
+            f"{mode_name}の対象による{ranking_period}営業日"
+            "リターン上位5対象と下位5対象"
         ),
         config={
             "displayModeBar": True,
             "toImageButtonOptions": {
                 "format": "png",
-                "filename": "sector-momentum-ranking",
+                "filename": f"{mode_key}-momentum-ranking",
                 "scale": 2,
             },
         },
-        key=f"sector-ranking-chart-{ranking_period}",
+        key=f"universe-ranking-chart-{mode_key}-{ranking_period}",
     )
     st.info(get_ranking_comment(sector_metrics, ranking_period))
 
-    st.subheader("多期間比較マトリックス")
+    st.subheader(f"{mode_name} 多期間比較マトリックス")
     st.caption(
         "色の濃さはリターンの大きさを示します（緑=プラス、青=マイナス）。"
         f"「加速初動」は直近5日が前週より{MATRIX_ACCELERATION_THRESHOLD:.1f}"
@@ -202,7 +262,7 @@ else:
         ],
         default=[],
         help="未選択の場合は全パターンを表示します。",
-        key="matrix-signal-filter",
+        key=f"matrix-signal-filter-{mode_key}",
     )
     filtered_matrix = (
         matrix_data.loc[matrix_data["初動判定"].isin(selected_signals)]
@@ -218,7 +278,7 @@ else:
             "前週5日リターン": st.column_config.NumberColumn(format="%.2f%%"),
             "前月リターン": st.column_config.NumberColumn(format="%.2f%%"),
         },
-        alt="東証33業種のリターン比較とパターン別初動判定",
+        alt=f"{mode_name}のリターン比較とパターン別初動判定",
     )
     with st.expander("マトリックスをPNG画像で表示・保存"):
         matrix_figure = build_matrix_figure(
@@ -228,25 +288,20 @@ else:
         st.plotly_chart(
             matrix_figure,
             width="stretch",
-            alt="絞り込み後の東証33業種リターン比較マトリックス",
+            alt=f"絞り込み後の{mode_name}リターン比較マトリックス",
             config={
                 "displayModeBar": True,
                 "toImageButtonOptions": {
                     "format": "png",
-                    "filename": "sector-comparison-matrix",
+                    "filename": f"{mode_key}-comparison-matrix",
                     "scale": 2,
                 },
             },
-            key="sector-matrix-chart",
+            key=f"universe-matrix-chart-{mode_key}",
         )
     st.info(get_matrix_comment(sector_metrics))
 
 st.subheader("ウォッチリスト管理")
-try:
-    active_watchlist = load_watchlist()
-except (OSError, ValueError) as exc:
-    st.error(f"ウォッチリストを読み込めません: {exc}")
-    st.stop()
 
 with st.expander("銘柄の追加・編集・削除", expanded=False):
     st.caption(
@@ -293,8 +348,8 @@ with st.expander("銘柄の追加・編集・削除", expanded=False):
             st.success("ウォッチリストを保存しました。")
             st.rerun()
 
-st.subheader("第1段階｜高速スクリーニング")
-if st.button("ウォッチリストを更新"):
+st.subheader(f"第1段階｜{mode_name} 高速スクリーニング")
+if st.button(f"{mode_name}のスクリーニングデータを更新"):
     st.cache_data.clear()
     st.session_state.pop("chart_png_data", None)
     st.session_state.pop("chart_png_ticker", None)
@@ -302,8 +357,8 @@ if st.button("ウォッチリストを更新"):
 rows: list[dict] = []
 data_by_ticker: dict[str, pd.DataFrame] = {}
 errors: list[str] = []
-with st.spinner("ウォッチリストを分析しています…"):
-    for ticker, company in active_watchlist.items():
+with st.spinner(f"{mode_name}の銘柄を分析しています…"):
+    for ticker, company in screening_universe.items():
         try:
             indicators = load_analysis(ticker)
             data_by_ticker[ticker] = indicators
@@ -359,7 +414,7 @@ if rows:
     st.dataframe(
         summary,
         width="stretch",
-        alt="ウォッチリスト銘柄の売買確度、テクニカル指標、恐怖指数",
+        alt=f"{mode_name}銘柄の売買確度、テクニカル指標、恐怖指数",
         column_config={
             "終値": st.column_config.NumberColumn(format="%.2f"),
             "買い確度": st.column_config.NumberColumn(format="%d%%"),
@@ -399,18 +454,19 @@ if rows:
         },
     )
 
-    if st.session_state.get("selected_ticker") not in data_by_ticker:
-        st.session_state["selected_ticker"] = next(iter(data_by_ticker))
+    selected_ticker_key = f"selected_ticker_{mode_key}"
+    if st.session_state.get(selected_ticker_key) not in data_by_ticker:
+        st.session_state[selected_ticker_key] = next(iter(data_by_ticker))
     selected = st.selectbox(
         "詳細分析する銘柄",
         options=list(data_by_ticker),
-        format_func=lambda ticker: f"{ticker}: {active_watchlist[ticker]}",
-        key="selected_ticker",
+        format_func=lambda ticker: f"{ticker}: {screening_universe[ticker]}",
+        key=selected_ticker_key,
     )
     indicators = data_by_ticker[selected]
-    company = active_watchlist[selected]
+    company = screening_universe[selected]
 
-    st.subheader("第2段階｜詳細分析・バックテスト")
+    st.subheader(f"第2段階｜{mode_name} 詳細分析・バックテスト")
     trend_data = None
     try:
         trend_data = load_trends(company)

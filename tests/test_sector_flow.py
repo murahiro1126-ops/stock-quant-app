@@ -16,6 +16,7 @@ from sector_flow import (
     build_rrg_figure,
     calculate_sector_metrics,
     classify_matrix_signal,
+    fetch_basket_close_prices,
     fetch_sector_close_prices,
     get_matrix_comment,
     get_ranking_comment,
@@ -93,6 +94,28 @@ def test_fetch_sector_close_prices_downloads_all_tickers_in_one_request(monkeypa
     assert len(result.columns) == 34
 
 
+def test_fetch_basket_close_prices_uses_supplied_portfolio_baskets(monkeypatch):
+    dates = pd.date_range("2025-01-01", periods=2, freq="B")
+    columns = pd.MultiIndex.from_tuples(
+        [("7203.T", "Close"), (MARKET_TICKER, "Close")]
+    )
+    downloaded = pd.DataFrame([[100, 200], [110, 220]], index=dates, columns=columns)
+    calls = []
+
+    def fake_download(**kwargs):
+        calls.append(kwargs)
+        return downloaded
+
+    monkeypatch.setattr("yfinance.download", fake_download)
+    baskets = {"トヨタ自動車（7203）": ("7203.T",)}
+
+    result = fetch_basket_close_prices(baskets)
+
+    assert set(calls[0]["tickers"]) == {"7203.T", MARKET_TICKER}
+    assert result.columns.tolist() == ["トヨタ自動車（7203）", MARKET_COLUMN]
+    assert result.iloc[-1, 0] == pytest.approx(110)
+
+
 def test_calculate_sector_metrics_builds_shared_returns_and_early_flag(
     sample_sector_prices,
 ):
@@ -123,6 +146,25 @@ def test_calculate_sector_metrics_builds_shared_returns_and_early_flag(
     assert latest_food["Return_5D"] > 0
     assert latest_food["Return_PreviousWeek"] < 0
     assert bool(latest_food["EarlySignal"])
+
+
+def test_shared_metrics_and_comments_support_individual_portfolio_stocks(
+    sample_sector_prices,
+):
+    prices = sample_sector_prices.rename(columns={"食品": "トヨタ自動車（7203）"})
+    metrics = calculate_sector_metrics(
+        prices,
+        constituents={"トヨタ自動車（7203）": ("7203.T",)},
+    )
+
+    assert set(
+        metrics.loc[
+            metrics["Sector"] == "トヨタ自動車（7203）", "Constituents"
+        ]
+    ) == {"7203.T"}
+    assert "対象銘柄" in get_rrg_comment(metrics)
+    assert "対象銘柄" in get_matrix_comment(metrics)
+    assert "銘柄" in build_matrix_figure(metrics).data[0].header.values
 
 
 @pytest.mark.parametrize(

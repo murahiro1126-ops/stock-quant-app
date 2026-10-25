@@ -85,7 +85,7 @@ def _extract_close_prices(
 ) -> pd.DataFrame:
     """Aggregate representative-stock daily returns into normalized sector indices."""
     if downloaded.empty:
-        raise ValueError("Yahoo Financeから株価データを取得できませんでした。")
+        raise ValueError("Yahoo Financeから分析対象の株価データを取得できませんでした。")
 
     tickers = {
         ticker
@@ -136,22 +136,26 @@ def _extract_close_prices(
             sector_returns[sector] = sector_return
 
     if not sector_returns:
-        raise ValueError("利用可能な業種代表銘柄の終値がありません。")
+        raise ValueError("利用可能な分析対象銘柄の終値がありません。")
 
     returns = pd.DataFrame(sector_returns, index=raw_prices.index)
     returns[MARKET_COLUMN] = ticker_returns[MARKET_TICKER]
     return (returns.fillna(0).add(1).cumprod() * 100).dropna(how="all")
 
 
-def fetch_sector_close_prices() -> pd.DataFrame:
-    """Download one year of adjusted daily closes for TSE 33 proxies and TOPIX."""
+def fetch_basket_close_prices(
+    baskets: Mapping[str, tuple[str, ...]],
+) -> pd.DataFrame:
+    """Download adjusted daily closes and aggregate the supplied stock baskets."""
     import yfinance as yf
     from yfinance.exceptions import YFException
 
+    if not baskets:
+        raise ValueError("分析対象の銘柄バスケットがありません。")
     tickers = sorted(
         {
             ticker
-            for symbols in TSE33_SECTOR_TICKERS.values()
+            for symbols in baskets.values()
             for ticker in symbols
         }
         | {MARKET_TICKER}
@@ -168,15 +172,23 @@ def fetch_sector_close_prices() -> pd.DataFrame:
         )
     except (OSError, RuntimeError, ValueError, YFException) as exc:
         raise RuntimeError(
-            f"Yahoo Financeからセクターデータを取得できません: {exc}"
+            f"Yahoo Financeから対象銘柄データを取得できません: {exc}"
         ) from exc
-    return _extract_close_prices(downloaded, TSE33_SECTOR_TICKERS)
+    return _extract_close_prices(downloaded, baskets)
 
 
-def calculate_sector_metrics(close_prices: pd.DataFrame) -> pd.DataFrame:
+def fetch_sector_close_prices() -> pd.DataFrame:
+    """Download one year of adjusted daily closes for TSE 33 proxies and TOPIX."""
+    return fetch_basket_close_prices(TSE33_SECTOR_TICKERS)
+
+
+def calculate_sector_metrics(
+    close_prices: pd.DataFrame,
+    constituents: Mapping[str, tuple[str, ...]] | None = None,
+) -> pd.DataFrame:
     """Build the shared long-form return and relative-momentum dataset."""
     if not isinstance(close_prices, pd.DataFrame) or close_prices.empty:
-        raise ValueError("セクター株価データが空です。")
+        raise ValueError("分析対象の株価データが空です。")
     if MARKET_COLUMN not in close_prices:
         raise ValueError(f"市場ベンチマーク列 {MARKET_COLUMN} がありません。")
 
@@ -225,6 +237,10 @@ def calculate_sector_metrics(close_prices: pd.DataFrame) -> pd.DataFrame:
             & relative_return_5d.gt(0)
         )
         pair["Sector"] = str(sector)
+        constituent_tickers = (constituents or TSE33_SECTOR_TICKERS).get(
+            str(sector), ()
+        )
+        pair["Constituents"] = "、".join(constituent_tickers)
         metrics_by_sector.append(
             pair.drop(columns="Market_Close").reset_index(names="Date")
         )
@@ -258,11 +274,33 @@ def _rrg_quadrant(rs_ratio: float, rs_momentum: float) -> str:
     return "Lagging"
 
 
-def _format_sector_tickers(sector: str) -> str:
+def _format_sector_tickers(
+    sector: str,
+    constituents: object | None = None,
+) -> str:
+    if isinstance(constituents, str) and constituents:
+        return "、".join(
+            ticker.removesuffix(".T") for ticker in constituents.split("、")
+        )
     tickers = TSE33_SECTOR_TICKERS.get(sector, ())
     if not tickers:
         return "代表銘柄情報なし"
     return "、".join(ticker.removesuffix(".T") for ticker in tickers)
+
+
+def _universe_term(metrics: pd.DataFrame) -> str:
+    if "Constituents" in metrics.columns:
+        constituents = metrics["Constituents"].dropna().astype(str)
+        constituents = constituents.loc[constituents.ne("")]
+        if not constituents.empty and constituents.map(
+            lambda value: len(value.split("、")) == 1
+        ).all():
+            return "銘柄"
+    return "業種"
+
+
+def _constituent_label(metrics: pd.DataFrame) -> str:
+    return "対象" if _universe_term(metrics) == "銘柄" else "代表"
 
 
 def get_rrg_selected_sectors(selection_state: object) -> set[str]:
@@ -412,7 +450,7 @@ def build_rrg_figure(
                 },
                 hoveron="points",
                 hovertemplate=(
-                    "業種: %{customdata[0]}"
+                    "対象: %{customdata[0]}"
                     "<br>象限: %{customdata[1]}"
                     "<br>RS-Ratio: %{x:.2f}"
                     "<br>RS-Momentum: %{y:.2f}"
@@ -442,7 +480,7 @@ def build_rrg_figure(
     figure.add_hline(y=100, line_dash="dash", line_color="#666")
     figure.add_vline(x=100, line_dash="dash", line_color="#666")
     figure.update_layout(
-        title="セクター相対強度ローテーション（RRG）",
+        title=f"{_universe_term(metrics)}相対強度ローテーション（RRG）",
         xaxis_title="相対強度（RS-Ratio）",
         yaxis_title="相対モメンタム（RS-Momentum）",
         xaxis={"range": x_range, "zeroline": False, "autorange": False},
@@ -497,12 +535,15 @@ def build_ranking_figure(metrics: pd.DataFrame, period: int = 20) -> go.Figure:
         for sector in extremes.index
     ]
     ticker_labels = [
-        ", ".join(
-            ticker.removesuffix(".T")
-            for ticker in TSE33_SECTOR_TICKERS.get(sector, ())
+        _format_sector_tickers(
+            str(sector),
+            extremes.loc[sector, "Constituents"]
+            if "Constituents" in extremes.columns
+            else None,
         )
         for sector in extremes.index
     ]
+    member_label = _constituent_label(metrics)
     figure = go.Figure(
         go.Bar(
             x=values,
@@ -516,7 +557,8 @@ def build_ranking_figure(metrics: pd.DataFrame, period: int = 20) -> go.Figure:
             textposition="outside",
             customdata=np.column_stack([rank_labels, ticker_labels]),
             hovertemplate=(
-                "%{y}（%{customdata[0]}）<br>代表銘柄: %{customdata[1]}"
+                f"%{{y}}（%{{customdata[0]}}）<br>{member_label}: "
+                "%{customdata[1]}"
                 f"<br>{period}営業日リターン: "
                 "%{x:.2f}%<extra></extra>"
             ),
@@ -531,7 +573,7 @@ def build_ranking_figure(metrics: pd.DataFrame, period: int = 20) -> go.Figure:
         annotation_position="top",
     )
     figure.update_layout(
-        title=f"{period}営業日リターン TOP5 / ワースト5",
+        title=f"{_universe_term(metrics)} {period}営業日リターン TOP5 / ワースト5",
         xaxis_title=f"{period}営業日リターン（%）",
         yaxis_title=None,
         font={"family": CHART_FONT_FAMILY},
@@ -638,6 +680,7 @@ def build_matrix_figure(
     sectors: list[str] | None = None,
 ) -> go.Figure:
     matrix = build_matrix_dataframe(metrics)
+    universe_term = _universe_term(metrics)
     if sectors is not None:
         matrix = matrix.loc[matrix.index.isin(sectors)]
     values: list[list[str]] = [[str(sector) for sector in matrix.index]]
@@ -674,7 +717,7 @@ def build_matrix_figure(
         go.Table(
             header={
                 "values": [
-                    "セクター",
+                    universe_term,
                     "直近5日リターン",
                     "前週5日リターン",
                     "前月リターン",
@@ -701,7 +744,7 @@ def build_matrix_figure(
         )
     )
     figure.update_layout(
-        title="多期間比較マトリックス",
+        title=f"{universe_term} 多期間比較マトリックス",
         font={"family": CHART_FONT_FAMILY},
         height=max(480, 105 + len(matrix) * 31),
         margin={"t": 65, "b": 15, "l": 10, "r": 10},
@@ -718,6 +761,12 @@ def get_rrg_comment(metrics: pd.DataFrame) -> str:
     histories = {
         sector: group.sort_values("Date")
         for sector, group in valid.groupby("Sector", sort=False)
+    }
+    universe_term = _universe_term(metrics)
+    member_label = _constituent_label(metrics)
+    constituents_by_sector = {
+        str(sector): group.iloc[-1].get("Constituents")
+        for sector, group in histories.items()
     }
     quadrant_counts = {quadrant: 0 for quadrant in _QUADRANT_LABELS}
     quadrant_shifts: list[tuple[str, str, str]] = []
@@ -783,14 +832,15 @@ def get_rrg_comment(metrics: pd.DataFrame) -> str:
             for sector, old, new in quadrant_shifts[:3]
         ) + "。"
     else:
-        shift_summary = "直近最大4営業日で象限を移動した業種はありません。"
+        shift_summary = f"直近最大4営業日で象限を移動した{universe_term}はありません。"
 
     if initial_entries:
         initial_signal = (
             "🔥 【資金流入の初動候補】停滞（左下）から改善（左上）へ"
-            "直近最大4営業日でシフトした業種: "
+            f"直近最大4営業日でシフトした{universe_term}: "
             + "、".join(
-                f"{sector}（代表: {_format_sector_tickers(sector)}）"
+                f"{sector}（{member_label}: "
+                f"{_format_sector_tickers(sector, constituents_by_sector.get(sector))}）"
                 for sector in initial_entries[:3]
             )
             + "。"
@@ -810,7 +860,8 @@ def get_rrg_comment(metrics: pd.DataFrame) -> str:
             f"テール移動距離の最大は「{fastest_sector}」の{fastest_distance:.2f}"
             f"ポイント（1営業日平均{speeds[fastest_sector]:.2f}ポイント、"
             f"平均加速度{accelerations[fastest_sector]:.2f}ポイント/営業日²）で、"
-            f"代表銘柄は {_format_sector_tickers(fastest_sector)} です。"
+            f"{member_label}銘柄は "
+            f"{_format_sector_tickers(fastest_sector, constituents_by_sector.get(fastest_sector))} です。"
         )
     else:
         fastest_sector = None
@@ -819,7 +870,8 @@ def get_rrg_comment(metrics: pd.DataFrame) -> str:
     improving_candidates.sort(key=lambda item: item[1], reverse=True)
     if improving_candidates:
         improving_summary = "改善ゾーンの注目候補: " + "、".join(
-            f"{sector}（代表: {_format_sector_tickers(sector)}）"
+            f"{sector}（{member_label}: "
+            f"{_format_sector_tickers(sector, constituents_by_sector.get(sector))}）"
             for sector, _, _, _ in improving_candidates[:3]
         ) + "。"
         inflow_sector = improving_candidates[0]
@@ -829,25 +881,27 @@ def get_rrg_comment(metrics: pd.DataFrame) -> str:
             "ポイント/営業日²）。"
         )
     else:
-        improving_summary = "現在、改善ゾーンにある業種はありません。"
+        improving_summary = f"現在、改善ゾーンにある{universe_term}はありません。"
         inflow_sector = None
-        inflow_signal = "改善ゾーン内で資金流入の初動候補となる業種は確認できません。"
+        inflow_signal = (
+            f"改善ゾーン内で資金流入の初動候補となる{universe_term}は確認できません。"
+        )
 
     if inflow_sector is not None:
         action = (
-            f"アクション案: 「{inflow_sector[0]}」の代表銘柄 "
-            f"({_format_sector_tickers(inflow_sector[0])}) を監視候補に加え、"
+            f"アクション案: 「{inflow_sector[0]}」の{member_label}銘柄 "
+            f"({_format_sector_tickers(inflow_sector[0], constituents_by_sector.get(inflow_sector[0]))}) を監視候補に加え、"
             "価格・出来高の継続性と個別材料を確認してください。"
         )
     else:
         action = (
             "アクション案: 改善ゾーンへの移行が確認できるまで、"
-            "代表銘柄の価格・出来高を継続観察してください。"
+            f"{member_label}銘柄の価格・出来高を継続観察してください。"
         )
 
     return (
-        f"先導 {quadrant_counts['Leading']}業種 / 改善 {quadrant_counts['Improving']}業種 / "
-        f"停滞 {quadrant_counts['Lagging']}業種 / 減速 {quadrant_counts['Weakening']}業種。"
+        f"先導 {quadrant_counts['Leading']}{universe_term} / 改善 {quadrant_counts['Improving']}{universe_term} / "
+        f"停滞 {quadrant_counts['Lagging']}{universe_term} / 減速 {quadrant_counts['Weakening']}{universe_term}。"
         f"{shift_summary}{initial_signal}{speed_summary}{improving_summary}"
         f"{inflow_signal}{action}"
         "※移動距離は相対強度・相対モメンタム座標上の変化であり、"
@@ -878,6 +932,8 @@ def get_ranking_comment(metrics: pd.DataFrame, period: int = 20) -> str:
     spread = strongest_return - weakest_return
     market_values = latest[market_column].dropna()
     market_return = float(market_values.iloc[-1]) if not market_values.empty else 0.0
+    universe_term = _universe_term(metrics)
+    member_label = _constituent_label(metrics)
     excess = latest[return_column] - latest[market_column]
     positive_excess = excess.clip(lower=0)
     total_positive_excess = float(positive_excess.sum())
@@ -886,38 +942,43 @@ def get_ranking_comment(metrics: pd.DataFrame, period: int = 20) -> str:
         top_three = positive_excess.nlargest(min(3, len(positive_excess)))
         concentration = float(top_three.sum() / total_positive_excess * 100)
         concentration_comment = (
-            f"TOPIX超過分の{concentration:.0f}%が上位{len(top_three)}業種に集中しています。"
+            f"TOPIX超過分の{concentration:.0f}%が上位{len(top_three)}{universe_term}に集中しています。"
         )
     else:
         concentration_comment = (
-            "TOPIXを上回る業種がなく、上昇テーマの広がりは限定的です。"
+            f"TOPIXを上回る{universe_term}がなく、上昇テーマの広がりは限定的です。"
         )
 
     theme_leaders = excess.nlargest(min(3, len(excess)))
     theme_summary = "、".join(
-        f"{sector}（TOPIX比 {value:+.2f}pt、代表: "
-        f"{', '.join(ticker.removesuffix('.T') for ticker in TSE33_SECTOR_TICKERS.get(sector, ()))})"
+        f"{sector}（TOPIX比 {value:+.2f}pt、{member_label}: "
+        f"{_format_sector_tickers(str(sector), latest.loc[sector].get('Constituents'))}）"
         for sector, value in theme_leaders.items()
         if value > 0
     )
     if theme_summary:
         theme_comment = f"相対優位テーマは{theme_summary}です。"
     else:
-        theme_comment = "TOPIXを上回る業種がなく、相対優位テーマは見られません。"
+        theme_comment = f"TOPIXを上回る{universe_term}がなく、相対優位テーマは見られません。"
 
     if spread >= 10:
-        dispersion_comment = "業種間格差が大きく、選別色の強い相場です。"
+        dispersion_comment = f"{universe_term}間格差が大きく、選別色の強い相場です。"
     elif spread >= 5:
-        dispersion_comment = "業種間格差は中程度で、強弱の見極めが重要です。"
+        dispersion_comment = f"{universe_term}間格差は中程度で、強弱の見極めが重要です。"
     else:
-        dispersion_comment = "業種間格差は小さく、業種選別の優位性は限定的です。"
+        dispersion_comment = f"{universe_term}間格差は小さく、選別の優位性は限定的です。"
 
+    basis_comment = (
+        "各銘柄の個別リターンをTOPIXと比較しています。"
+        if universe_term == "銘柄"
+        else "代表銘柄は業種内で等ウェイト集計した代理指標です。"
+    )
     return (
         f"【{period}営業日分析】最強は「{strongest}」({strongest_return:+.2f}%)、"
         f"最弱は「{weakest}」({weakest_return:+.2f}%)で、格差は{spread:.2f}ptです。"
         f"{dispersion_comment} TOPIXは{market_return:+.2f}%。"
         f"{concentration_comment}{theme_comment}"
-        "代表銘柄は業種内で等ウェイト集計した代理指標であり、"
+        f"{basis_comment}"
         "実際の資金フローや売買推奨を示すものではありません。"
     )
 
@@ -937,7 +998,8 @@ def get_matrix_comment(metrics: pd.DataFrame) -> str:
             + ", ".join(sorted(missing))
         )
 
-    newly_lit: list[tuple[str, str, float, float, float]] = []
+    member_label = _constituent_label(metrics)
+    newly_lit: list[tuple[str, str, float, float, float, object | None]] = []
     for sector, history in metrics.sort_values("Date").groupby(
         "Sector", sort=False
     ):
@@ -966,6 +1028,7 @@ def get_matrix_comment(metrics: pd.DataFrame) -> str:
                     float(current["Return_5D"]),
                     float(current["Return_PreviousWeek"]),
                     float(current["Return_PreviousMonth"]),
+                    current.get("Constituents"),
                 )
             )
 
@@ -974,18 +1037,18 @@ def get_matrix_comment(metrics: pd.DataFrame) -> str:
     if not newly_lit:
         return (
             "本日新たに点灯した転換初動・加速初動シグナルはありません。"
-            "初動判定は代表銘柄バスケットのリターンから算出しています。"
+            f"初動判定は{member_label}銘柄のリターンから算出しています。"
         )
 
     bullets = "\n".join(
         f"- **{signal}｜{sector}**: 直近5日 {return_5d:+.2f}%、"
         f"前週 {previous_week:+.2f}%、前月 {previous_month:+.2f}%。"
-        f"代表銘柄: {_format_sector_tickers(sector)}"
-        for sector, signal, return_5d, previous_week, previous_month in newly_lit
+        f"{member_label}銘柄: {_format_sector_tickers(sector, constituents)}"
+        for sector, signal, return_5d, previous_week, previous_month, constituents in newly_lit
     )
     return (
         "本日新たに点灯した初動シグナルです。個別銘柄の価格・出来高や材料を"
         "確認する候補としてご覧ください。\n\n"
         f"{bullets}\n\n"
-        "※代表銘柄は業種の参考バスケットであり、売買推奨ではありません。"
+        f"※{member_label}銘柄の価格リターンに基づく参考情報であり、売買推奨ではありません。"
     )
