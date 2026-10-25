@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import numpy as np
 import pandas as pd
@@ -182,9 +183,38 @@ def fetch_sector_close_prices() -> pd.DataFrame:
     return fetch_basket_close_prices(TSE33_SECTOR_TICKERS)
 
 
+def fetch_ticker_names(
+    tickers: tuple[str, ...],
+) -> tuple[dict[str, str], dict[str, str]]:
+    """Resolve ticker names from Yahoo Finance, returning names and lookup errors."""
+    import yfinance as yf
+
+    def resolve(ticker: str) -> tuple[str, str]:
+        info = yf.Ticker(ticker).get_info()
+        name = info.get("shortName") or info.get("longName")
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError("Yahoo Financeの銘柄情報に銘柄名がありません。")
+        return ticker, name.strip()
+
+    names: dict[str, str] = {}
+    errors: dict[str, str] = {}
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        futures = {executor.submit(resolve, ticker): ticker for ticker in tickers}
+        for future in as_completed(futures):
+            ticker = futures[future]
+            try:
+                resolved_ticker, name = future.result()
+            except Exception as exc:
+                errors[ticker] = str(exc)
+            else:
+                names[resolved_ticker] = name
+    return names, errors
+
+
 def calculate_sector_metrics(
     close_prices: pd.DataFrame,
     constituents: Mapping[str, tuple[str, ...]] | None = None,
+    ticker_names: Mapping[str, str] | None = None,
 ) -> pd.DataFrame:
     """Build the shared long-form return and relative-momentum dataset."""
     if not isinstance(close_prices, pd.DataFrame) or close_prices.empty:
@@ -241,6 +271,9 @@ def calculate_sector_metrics(
             str(sector), ()
         )
         pair["Constituents"] = "、".join(constituent_tickers)
+        pair["ConstituentNames"] = "、".join(
+            (ticker_names or {}).get(ticker, "") for ticker in constituent_tickers
+        )
         metrics_by_sector.append(
             pair.drop(columns="Market_Close").reset_index(names="Date")
         )
@@ -277,15 +310,27 @@ def _rrg_quadrant(rs_ratio: float, rs_momentum: float) -> str:
 def _format_sector_tickers(
     sector: str,
     constituents: object | None = None,
+    constituent_names: object | None = None,
 ) -> str:
-    if isinstance(constituents, str) and constituents:
-        return "、".join(
-            ticker.removesuffix(".T") for ticker in constituents.split("、")
-        )
-    tickers = TSE33_SECTOR_TICKERS.get(sector, ())
+    tickers = (
+        constituents.split("、")
+        if isinstance(constituents, str) and constituents
+        else list(TSE33_SECTOR_TICKERS.get(sector, ()))
+    )
     if not tickers:
         return "代表銘柄情報なし"
-    return "、".join(ticker.removesuffix(".T") for ticker in tickers)
+    names = (
+        constituent_names.split("、")
+        if isinstance(constituent_names, str)
+        else []
+    )
+    names.extend([""] * (len(tickers) - len(names)))
+    return "、".join(
+        f"{ticker.removesuffix('.T')}({name})"
+        if name
+        else ticker.removesuffix(".T")
+        for ticker, name in zip(tickers, names)
+    )
 
 
 def _universe_term(metrics: pd.DataFrame) -> str:
@@ -540,6 +585,9 @@ def build_ranking_figure(metrics: pd.DataFrame, period: int = 20) -> go.Figure:
             extremes.loc[sector, "Constituents"]
             if "Constituents" in extremes.columns
             else None,
+            extremes.loc[sector, "ConstituentNames"]
+            if "ConstituentNames" in extremes.columns
+            else None,
         )
         for sector in extremes.index
     ]
@@ -768,6 +816,10 @@ def get_rrg_comment(metrics: pd.DataFrame) -> str:
         str(sector): group.iloc[-1].get("Constituents")
         for sector, group in histories.items()
     }
+    constituent_names_by_sector = {
+        str(sector): group.iloc[-1].get("ConstituentNames")
+        for sector, group in histories.items()
+    }
     quadrant_counts = {quadrant: 0 for quadrant in _QUADRANT_LABELS}
     quadrant_shifts: list[tuple[str, str, str]] = []
     initial_entries: list[str] = []
@@ -835,13 +887,23 @@ def get_rrg_comment(metrics: pd.DataFrame) -> str:
         shift_summary = f"直近最大4営業日で象限を移動した{universe_term}はありません。"
 
     if initial_entries:
+        initial_details = [
+            (
+                sector,
+                _format_sector_tickers(
+                    sector,
+                    constituents_by_sector.get(sector),
+                    constituent_names_by_sector.get(sector),
+                ),
+            )
+            for sector in initial_entries[:3]
+        ]
         initial_signal = (
             "🔥 【資金流入の初動候補】停滞（左下）から改善（左上）へ"
             f"直近最大4営業日でシフトした{universe_term}: "
             + "、".join(
-                f"{sector}（{member_label}: "
-                f"{_format_sector_tickers(sector, constituents_by_sector.get(sector))}）"
-                for sector in initial_entries[:3]
+                f"{sector}（{member_label}: {tickers}）"
+                for sector, tickers in initial_details
             )
             + "。"
         )
@@ -856,12 +918,16 @@ def get_rrg_comment(metrics: pd.DataFrame) -> str:
     )
     if ranked_distances:
         fastest_sector, fastest_distance = ranked_distances[0]
+        fastest_tickers = _format_sector_tickers(
+            fastest_sector,
+            constituents_by_sector.get(fastest_sector),
+            constituent_names_by_sector.get(fastest_sector),
+        )
         speed_summary = (
             f"テール移動距離の最大は「{fastest_sector}」の{fastest_distance:.2f}"
             f"ポイント（1営業日平均{speeds[fastest_sector]:.2f}ポイント、"
             f"平均加速度{accelerations[fastest_sector]:.2f}ポイント/営業日²）で、"
-            f"{member_label}銘柄は "
-            f"{_format_sector_tickers(fastest_sector, constituents_by_sector.get(fastest_sector))} です。"
+            f"{member_label}銘柄は {fastest_tickers} です。"
         )
     else:
         fastest_sector = None
@@ -869,10 +935,20 @@ def get_rrg_comment(metrics: pd.DataFrame) -> str:
 
     improving_candidates.sort(key=lambda item: item[1], reverse=True)
     if improving_candidates:
-        improving_summary = "改善ゾーンの注目候補: " + "、".join(
-            f"{sector}（{member_label}: "
-            f"{_format_sector_tickers(sector, constituents_by_sector.get(sector))}）"
+        improving_details = [
+            (
+                sector,
+                _format_sector_tickers(
+                    sector,
+                    constituents_by_sector.get(sector),
+                    constituent_names_by_sector.get(sector),
+                ),
+            )
             for sector, _, _, _ in improving_candidates[:3]
+        ]
+        improving_summary = "改善ゾーンの注目候補: " + "、".join(
+            f"{sector}（{member_label}: {tickers}）"
+            for sector, tickers in improving_details
         ) + "。"
         inflow_sector = improving_candidates[0]
         inflow_signal = (
@@ -888,9 +964,14 @@ def get_rrg_comment(metrics: pd.DataFrame) -> str:
         )
 
     if inflow_sector is not None:
+        inflow_tickers = _format_sector_tickers(
+            inflow_sector[0],
+            constituents_by_sector.get(inflow_sector[0]),
+            constituent_names_by_sector.get(inflow_sector[0]),
+        )
         action = (
             f"アクション案: 「{inflow_sector[0]}」の{member_label}銘柄 "
-            f"({_format_sector_tickers(inflow_sector[0], constituents_by_sector.get(inflow_sector[0]))}) を監視候補に加え、"
+            f"({inflow_tickers}) を監視候補に加え、"
             "価格・出来高の継続性と個別材料を確認してください。"
         )
     else:
@@ -950,12 +1031,18 @@ def get_ranking_comment(metrics: pd.DataFrame, period: int = 20) -> str:
         )
 
     theme_leaders = excess.nlargest(min(3, len(excess)))
-    theme_summary = "、".join(
-        f"{sector}（TOPIX比 {value:+.2f}pt、{member_label}: "
-        f"{_format_sector_tickers(str(sector), latest.loc[sector].get('Constituents'))}）"
-        for sector, value in theme_leaders.items()
-        if value > 0
-    )
+    theme_summaries = []
+    for sector, value in theme_leaders.items():
+        if value > 0:
+            tickers = _format_sector_tickers(
+                str(sector),
+                latest.loc[sector].get("Constituents"),
+                latest.loc[sector].get("ConstituentNames"),
+            )
+            theme_summaries.append(
+                f"{sector}（TOPIX比 {value:+.2f}pt、{member_label}: {tickers}）"
+            )
+    theme_summary = "、".join(theme_summaries)
     if theme_summary:
         theme_comment = f"相対優位テーマは{theme_summary}です。"
     else:
@@ -999,7 +1086,9 @@ def get_matrix_comment(metrics: pd.DataFrame) -> str:
         )
 
     member_label = _constituent_label(metrics)
-    newly_lit: list[tuple[str, str, float, float, float, object | None]] = []
+    newly_lit: list[
+        tuple[str, str, float, float, float, object | None, object | None]
+    ] = []
     for sector, history in metrics.sort_values("Date").groupby(
         "Sector", sort=False
     ):
@@ -1029,6 +1118,7 @@ def get_matrix_comment(metrics: pd.DataFrame) -> str:
                     float(current["Return_PreviousWeek"]),
                     float(current["Return_PreviousMonth"]),
                     current.get("Constituents"),
+                    current.get("ConstituentNames"),
                 )
             )
 
@@ -1043,8 +1133,17 @@ def get_matrix_comment(metrics: pd.DataFrame) -> str:
     bullets = "\n".join(
         f"- **{signal}｜{sector}**: 直近5日 {return_5d:+.2f}%、"
         f"前週 {previous_week:+.2f}%、前月 {previous_month:+.2f}%。"
-        f"{member_label}銘柄: {_format_sector_tickers(sector, constituents)}"
-        for sector, signal, return_5d, previous_week, previous_month, constituents in newly_lit
+        f"{member_label}銘柄: "
+        f"{_format_sector_tickers(sector, constituents, constituent_names)}"
+        for (
+            sector,
+            signal,
+            return_5d,
+            previous_week,
+            previous_month,
+            constituents,
+            constituent_names,
+        ) in newly_lit
     )
     return (
         "本日新たに点灯した初動シグナルです。個別銘柄の価格・出来高や材料を"

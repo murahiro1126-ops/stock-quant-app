@@ -18,6 +18,7 @@ from sector_flow import (
     classify_matrix_signal,
     fetch_basket_close_prices,
     fetch_sector_close_prices,
+    fetch_ticker_names,
     get_matrix_comment,
     get_ranking_comment,
     get_rrg_comment,
@@ -116,6 +117,24 @@ def test_fetch_basket_close_prices_uses_supplied_portfolio_baskets(monkeypatch):
     assert result.iloc[-1, 0] == pytest.approx(110)
 
 
+def test_fetch_ticker_names_returns_names_and_reports_lookup_errors(monkeypatch):
+    def fake_ticker(ticker):
+        class FakeTicker:
+            def get_info(self):
+                if ticker == "0000.T":
+                    raise ValueError("銘柄情報なし")
+                return {"shortName": "ニッスイ"}
+
+        return FakeTicker()
+
+    monkeypatch.setattr("yfinance.Ticker", fake_ticker)
+
+    names, errors = fetch_ticker_names(("1332.T", "0000.T"))
+
+    assert names == {"1332.T": "ニッスイ"}
+    assert errors == {"0000.T": "銘柄情報なし"}
+
+
 def test_calculate_sector_metrics_builds_shared_returns_and_early_flag(
     sample_sector_prices,
 ):
@@ -165,6 +184,29 @@ def test_shared_metrics_and_comments_support_individual_portfolio_stocks(
     assert "対象銘柄" in get_rrg_comment(metrics)
     assert "対象銘柄" in get_matrix_comment(metrics)
     assert "銘柄" in build_matrix_figure(metrics).data[0].header.values
+
+
+def test_sector_comment_and_ranking_include_ticker_names(sample_sector_prices):
+    metrics = calculate_sector_metrics(
+        sample_sector_prices,
+        constituents={
+            "食品": ("1332.T",),
+            "機械": ("6301.T",),
+        },
+        ticker_names={
+            "1332.T": "ニッスイ",
+            "6301.T": "小松製作所",
+        },
+    )
+
+    comment = get_ranking_comment(metrics)
+    ranking_labels = build_ranking_figure(metrics).data[0].customdata[:, 1]
+
+    assert "1332(ニッスイ)" in comment
+    assert any(
+        label in {"1332(ニッスイ)", "6301(小松製作所)"}
+        for label in ranking_labels
+    )
 
 
 @pytest.mark.parametrize(
@@ -229,6 +271,8 @@ def test_matrix_comment_lists_new_signals_with_representative_tickers():
                 "Return_5D": current,
                 "Return_PreviousWeek": previous,
                 "Return_PreviousMonth": month,
+                "Constituents": "8601.T、8604.T、8697.T",
+                "ConstituentNames": "大和証券グループ本社、野村ホールディングス、日本取引所グループ",
             }
             for date, current, previous, month in (
                 (dates[0], -1.0, -0.5, -2.0),
@@ -240,7 +284,10 @@ def test_matrix_comment_lists_new_signals_with_representative_tickers():
     comment = get_matrix_comment(metrics)
 
     assert "🔥 転換初動｜証券・商品先物取引業" in comment
-    assert "代表銘柄: 8601、8604、8697" in comment
+    assert (
+        "代表銘柄: 8601(大和証券グループ本社)、"
+        "8604(野村ホールディングス)、8697(日本取引所グループ)"
+    ) in comment
 
 
 def test_matrix_comment_does_not_repeat_existing_signal():
@@ -303,6 +350,8 @@ def test_rrg_comment_detects_recent_lagging_to_improving_transition():
                 "RS_Ratio": ratio,
                 "RS_Momentum": momentum,
                 "Momentum_20D": 1.0,
+                "Constituents": "1605.T、1662.T",
+                "ConstituentNames": "INPEX、石油資源開発",
             }
             for date, ratio, momentum in zip(
                 dates, [97.0, 97.5, 99.0], [96.0, 99.0, 101.0]
@@ -315,7 +364,10 @@ def test_rrg_comment_detects_recent_lagging_to_improving_transition():
     assert "直近最大4営業日の象限シフト" in comment
     assert "停滞（左下）→改善（左上）" in comment
     assert "【資金流入の初動候補】" in comment
-    assert "証券・商品先物取引業（代表: 8601、8604、8697）" in comment
+    assert (
+        "証券・商品先物取引業（代表: 1605(INPEX)、1662(石油資源開発)）"
+        in comment
+    )
     assert "移動距離の最大は「証券・商品先物取引業」" in comment
     assert "平均加速度1.41ポイント/営業日²" in comment
     assert "価格・出来高の継続性" in comment

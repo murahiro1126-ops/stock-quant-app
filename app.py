@@ -40,6 +40,7 @@ from sector_flow import (
     build_rrg_figure,
     calculate_sector_metrics,
     fetch_basket_close_prices,
+    fetch_ticker_names,
     get_matrix_comment,
     get_ranking_comment,
     get_rrg_comment,
@@ -84,18 +85,49 @@ mode_name = "Myポートフォリオ" if is_portfolio_mode else "東証33業種"
 if is_portfolio_mode and watchlist_error is not None:
     st.error(f"ウォッチリストを読み込めません: {watchlist_error}")
 
+
+@st.cache_data(ttl=86400, max_entries=2, show_spinner=False)
+def load_ticker_names(
+    tickers: tuple[str, ...],
+) -> tuple[dict[str, str], dict[str, str]]:
+    return fetch_ticker_names(tickers)
+
+
 if is_portfolio_mode:
+    ticker_names = active_watchlist
     analysis_baskets = {
         f"{company}（{ticker.removesuffix('.T')}）": (ticker,)
         for ticker, company in active_watchlist.items()
     }
     screening_universe = dict(active_watchlist)
 else:
+    tse33_tickers = tuple(
+        sorted(
+            {
+                ticker
+                for tickers in TSE33_SECTOR_TICKERS.values()
+                for ticker in tickers
+            }
+        )
+    )
+    with st.spinner("東証33業種の代表銘柄名を取得しています…"):
+        ticker_names, ticker_name_errors = load_ticker_names(tse33_tickers)
+    if ticker_name_errors:
+        failed_tickers = sorted(ticker_name_errors)
+        error_details = " / ".join(
+            f"{ticker}: {ticker_name_errors[ticker]}" for ticker in failed_tickers[:2]
+        )
+        st.warning(
+            f"{len(failed_tickers)}銘柄の正式名称を取得できませんでした。"
+            "該当銘柄はコードを表示します: "
+            + "、".join(failed_tickers[:5])
+            + ("、…" if len(failed_tickers) > 5 else "")
+            + f"（取得エラー: {error_details}）"
+        )
     analysis_baskets = dict(TSE33_SECTOR_TICKERS)
     screening_universe = {
-        ticker: f"{sector}代表銘柄"
-        for sector, tickers in TSE33_SECTOR_TICKERS.items()
-        for ticker in tickers
+        ticker: ticker_names.get(ticker, "銘柄名未取得")
+        for ticker in tse33_tickers
     }
 
 
@@ -149,6 +181,7 @@ try:
     sector_metrics = calculate_sector_metrics(
         universe_prices,
         constituents=analysis_baskets,
+        ticker_names=ticker_names,
     )
 except (OSError, RuntimeError, ValueError) as exc:
     st.error(f"{mode_name}の分析データを準備できませんでした: {exc}")
