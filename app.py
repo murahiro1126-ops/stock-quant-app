@@ -864,10 +864,7 @@ if rows:
 
     if st.button("PNG画像を生成", key=f"generate-png-{selected}"):
         try:
-            st.session_state["chart_png_data"] = figure.to_image(
-                format="png",
-                width=1600,
-            )
+            st.session_state["chart_png_data"] = render_plotly_png(figure)
             st.session_state["chart_png_ticker"] = selected
         except (ValueError, ImportError, RuntimeError) as exc:
             st.session_state.pop("chart_png_data", None)

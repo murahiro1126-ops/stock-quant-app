@@ -6,6 +6,7 @@ import pytest
 
 import postprime_export
 from postprime_export import (
+    PNG_EXPORT_SCALE,
     build_postprime_export_text,
     compose_plotly_png,
     render_plotly_png,
@@ -41,22 +42,35 @@ def test_build_postprime_export_text_reports_missing_analysis_comments():
 
 def test_render_plotly_png_delegates_width_and_png_format(monkeypatch):
     calls = []
+    rendered_figures = []
 
-    def fake_to_image(_figure, *, format, width):
-        calls.append((format, width))
+    def fake_to_image(figure, *, format, width, scale):
+        calls.append((format, width, scale))
+        rendered_figures.append(figure)
         return b"png-data"
 
     monkeypatch.setattr(go.Figure, "to_image", fake_to_image)
 
-    assert render_plotly_png(go.Figure(), width=800) == b"png-data"
-    assert calls == [("png", 800)]
+    figure = go.Figure(
+        data=[go.Scatter(name="🔥 Signal", text=["🚀", "⚠️"])]
+    )
+    figure.update_layout(title="Momentum 🚀")
+
+    assert render_plotly_png(figure, width=800) == b"png-data"
+    assert calls == [("png", 800, PNG_EXPORT_SCALE)]
+    assert "🔥" not in str(rendered_figures[0].to_plotly_json())
+    assert "🚀" not in str(rendered_figures[0].to_plotly_json())
+    assert "⚠️" not in str(rendered_figures[0].to_plotly_json())
+    assert "🔥" in str(figure.to_plotly_json())
 
 
 def test_compose_plotly_png_stacks_named_chart_images(monkeypatch):
     colors = ["red", "blue"]
+    rendered_scales = []
 
-    def fake_render(_figure, *, width):
-        image = Image.new("RGB", (width, 20), colors.pop(0))
+    def fake_render(_figure, *, width, scale):
+        rendered_scales.append(scale)
+        image = Image.new("RGB", (width * scale, 20 * scale), colors.pop(0))
         output = BytesIO()
         image.save(output, format="PNG")
         return output.getvalue()
@@ -66,6 +80,7 @@ def test_compose_plotly_png_stacks_named_chart_images(monkeypatch):
         (("RRG", go.Figure()), ("Matrix", go.Figure())),
         width=120,
         gap=5,
+        scale=1,
     )
 
     with Image.open(BytesIO(png_data)) as combined:
@@ -73,6 +88,7 @@ def test_compose_plotly_png_stacks_named_chart_images(monkeypatch):
         assert combined.size == (120, 32 + 20 + 5 + 32 + 20)
         assert combined.getpixel((0, 32)) == (255, 0, 0)
         assert combined.getpixel((0, 32 + 20 + 5 + 32)) == (0, 0, 255)
+    assert rendered_scales == [1, 1]
 
 
 @pytest.mark.parametrize(
@@ -80,8 +96,12 @@ def test_compose_plotly_png_stacks_named_chart_images(monkeypatch):
     [
         (0, 0, "画像幅"),
         (100, -1, "画像幅"),
+        (100, 0, "解像度スケール"),
     ],
 )
 def test_compose_plotly_png_rejects_invalid_dimensions(width, gap, message):
+    scale = 0 if message == "解像度スケール" else 2
     with pytest.raises(ValueError, match=message):
-        compose_plotly_png((("RRG", go.Figure()),), width=width, gap=gap)
+        compose_plotly_png(
+            (("RRG", go.Figure()),), width=width, gap=gap, scale=scale
+        )
