@@ -160,6 +160,109 @@ def load_universe_prices(
     return fetch_basket_close_prices(dict(baskets))
 
 
+def render_macro_postprime_export(
+    mode_name: str,
+    mode_key: str,
+    export_figures: tuple[tuple[str, go.Figure], ...] | None,
+    export_comments: dict[str, str],
+    ranking_period: int | None,
+    filtered_matrix: pd.DataFrame | None,
+    highlighted_sectors: set[str],
+    matrix_figure: go.Figure | None,
+) -> None:
+    st.header("PostPrime投稿用 (第0層) 一括データ出力＆画像書き出し")
+    st.caption(
+        "第0層のコメントをコピー用にまとめ、画像(A)は3チャートを縦結合、"
+        "画像(B)は多期間比較マトリックス単体で出力します。"
+    )
+    postprime_export_text = build_postprime_export_text(
+        mode_name, export_comments
+    )
+    st.code(postprime_export_text, language=None)
+
+    export_signature = hashlib.sha256(
+        json.dumps(
+            {
+                "mode": mode_key,
+                "comments": export_comments,
+                "figures": (
+                    [figure.to_json() for _, figure in export_figures]
+                    if export_figures
+                    else []
+                ),
+                "ranking_period": ranking_period,
+                "matrix_targets": (
+                    list(filtered_matrix.index)
+                    if filtered_matrix is not None
+                    else []
+                ),
+                "rrg_highlights": sorted(highlighted_sectors),
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        ).encode("utf-8")
+    ).hexdigest()[:16]
+    composite_image_key = f"postprime-image-a-{mode_key}"
+    matrix_image_key = f"postprime-image-b-{mode_key}"
+    composite_signature_key = f"{composite_image_key}-signature"
+    matrix_signature_key = f"{matrix_image_key}-signature"
+
+    if export_figures is None or matrix_figure is None:
+        st.info("分析データがないため、画像出力は利用できません。")
+        return
+
+    image_columns = st.columns(2)
+    with image_columns[0]:
+        if st.button(
+            "画像出力(A) ｜ Gemini解析用・統合画像を生成",
+            key=f"generate-{composite_image_key}",
+            width="stretch",
+        ):
+            try:
+                st.session_state[composite_image_key] = compose_plotly_png(
+                    export_figures
+                )
+                st.session_state[composite_signature_key] = export_signature
+            except (ImportError, OSError, RuntimeError, ValueError) as exc:
+                st.session_state.pop(composite_image_key, None)
+                st.session_state.pop(composite_signature_key, None)
+                st.error(f"統合画像を生成できませんでした: {exc}")
+        if st.session_state.get(composite_signature_key) == export_signature:
+            st.download_button(
+                "画像出力(A)をダウンロード",
+                data=st.session_state[composite_image_key],
+                file_name=f"{mode_key}-postprime-dashboard.png",
+                mime="image/png",
+                key=f"download-{composite_image_key}",
+                width="stretch",
+            )
+
+    with image_columns[1]:
+        if st.button(
+            "画像出力(B) ｜ PostPrime添付用・マトリックスを生成",
+            key=f"generate-{matrix_image_key}",
+            width="stretch",
+        ):
+            try:
+                st.session_state[matrix_image_key] = render_plotly_png(
+                    matrix_figure
+                )
+                st.session_state[matrix_signature_key] = export_signature
+            except (ImportError, OSError, RuntimeError, ValueError) as exc:
+                st.session_state.pop(matrix_image_key, None)
+                st.session_state.pop(matrix_signature_key, None)
+                st.error(f"マトリックス画像を生成できませんでした: {exc}")
+        if st.session_state.get(matrix_signature_key) == export_signature:
+            st.download_button(
+                "画像出力(B)をダウンロード",
+                data=st.session_state[matrix_image_key],
+                file_name=f"{mode_key}-postprime-matrix.png",
+                mime="image/png",
+                key=f"download-{matrix_image_key}",
+                width="stretch",
+            )
+
+
 export_figures: tuple[tuple[str, go.Figure], ...] | None = None
 export_comments: dict[str, str] = {}
 
@@ -358,6 +461,18 @@ else:
         "モメンタム自動コメント": ranking_comment,
         "多期間比較マトリックス自動コメント（初動銘柄含む）": matrix_comment,
     }
+    render_macro_postprime_export(
+        mode_name=mode_name,
+        mode_key=mode_key,
+        export_figures=export_figures,
+        export_comments=export_comments,
+        ranking_period=ranking_period if export_figures else None,
+        filtered_matrix=filtered_matrix if export_figures else None,
+        highlighted_sectors=(
+            highlighted_sectors if export_figures else set()
+        ),
+        matrix_figure=matrix_figure if export_figures else None,
+    )
 
 st.subheader("ウォッチリスト管理")
 
@@ -511,6 +626,18 @@ if rows:
             ),
         },
     )
+
+    screening_export_text = (
+        f"以下は{mode_name}の高速スクリーニング結果です。"
+        "買い確度・売り確度・トレンド・値動き・恐怖指数を比較し、"
+        "リスクと数値根拠を明示したうえで、詳細分析に進める候補銘柄を"
+        "最大3銘柄選んでください。売買を断定せず、該当候補がない場合は"
+        "その旨を説明してください。\n\n"
+        "【スクリーニング結果】\n"
+        f"{summary.to_string()}"
+    )
+    st.markdown("**Geminiへのおすすめ銘柄ピックアップ依頼**")
+    st.code(screening_export_text, language=None)
 
     selected_ticker_key = f"selected_ticker_{mode_key}"
     if st.session_state.get(selected_ticker_key) not in data_by_ticker:
@@ -862,26 +989,6 @@ if rows:
         else:
             st.info("指定した期間・条件ではバックテスト対象のトレードがありません。")
 
-    if st.button("PNG画像を生成", key=f"generate-png-{selected}"):
-        try:
-            st.session_state["chart_png_data"] = render_plotly_png(figure)
-            st.session_state["chart_png_ticker"] = selected
-        except (ValueError, ImportError, RuntimeError) as exc:
-            st.session_state.pop("chart_png_data", None)
-            st.session_state.pop("chart_png_ticker", None)
-            st.error(f"PNG出力に失敗しました。Kaleidoの状態を確認してください: {exc}")
-    if (
-        st.session_state.get("chart_png_ticker") == selected
-        and st.session_state.get("chart_png_data")
-    ):
-        st.download_button(
-            "生成したチャートをPNGでダウンロード",
-            data=st.session_state["chart_png_data"],
-            file_name=f"{selected}_analysis.png",
-            mime="image/png",
-            key=f"download-png-{selected}",
-        )
-
     if postprime_cache_key not in st.session_state:
         with st.spinner("PostPrime投稿文を作成しています…"):
             st.session_state[postprime_cache_key] = generate_postprime_text(
@@ -907,95 +1014,56 @@ if rows:
                 sell_reasons=current_score["sell_reasons"],
                 gemini_api_key=GEMINI_API_KEY,
             )
-    st.markdown("**PostPrime投稿用テキスト**")
-    st.code(st.session_state[postprime_cache_key], language=None)
+    st.header("PostPrime投稿用 (第1・2段階) 一括データ出力＆画像書き出し")
+    st.caption("選択銘柄の個別分析とクオンツ解説をまとめてコピーできます。")
+    detail_export_text = (
+        f"ギャルたん！{selected} ({company})の最新クオンツ分析データを"
+        "共有するね！\n"
+        "以下の詳細データとクオンツ直感解説を参考に、PostPrime投稿用の"
+        "記事を作成してください。数値を誇張せず、リスクと分析上の注意点も"
+        "含めてください。\n\n"
+        "【個別銘柄の詳細データ】\n"
+        f"銘柄コード: {selected}\n"
+        f"銘柄名: {company}\n"
+        f"買い確度: {current_score['buy_confidence']}%\n"
+        f"売り確度: {current_score['sell_confidence']}%\n"
+        f"値位置: {current_score['range_status']}\n"
+        f"恐怖指数: {fear_greed_value}\n"
+        f"AI信頼度: ランク{rank}（{confidence_score}%）\n"
+        f"バックテスト勝率: {win_rate:.1f}% "
+        f"（{backtest['trade_count']}回）\n"
+        f"現在の判定理由（買い）: "
+        f"{' / '.join(current_score['buy_reasons']) or '条件なし'}\n"
+        f"現在の判定理由（売り）: "
+        f"{' / '.join(current_score['sell_reasons']) or '条件なし'}\n\n"
+        "【ギャルたんクオンツの直感解説】\n"
+        f"{st.session_state[comment_cache_key]}\n\n"
+        "【PostPrime記事作成案】\n"
+        f"{st.session_state[postprime_cache_key]}"
+    )
+    st.code(detail_export_text, language=None)
+
+    if st.button(
+        "画像出力(C) ｜ Gemini解析用兼PostPrime添付用・統合画像を生成",
+        key=f"generate-png-{selected}",
+    ):
+        try:
+            st.session_state["chart_png_data"] = render_plotly_png(figure)
+            st.session_state["chart_png_ticker"] = selected
+        except (ValueError, ImportError, RuntimeError) as exc:
+            st.session_state.pop("chart_png_data", None)
+            st.session_state.pop("chart_png_ticker", None)
+            st.error(f"PNG出力に失敗しました。Kaleidoの状態を確認してください: {exc}")
+    if (
+        st.session_state.get("chart_png_ticker") == selected
+        and st.session_state.get("chart_png_data")
+    ):
+        st.download_button(
+            "画像出力(C)をダウンロード",
+            data=st.session_state["chart_png_data"],
+            file_name=f"{selected}_analysis.png",
+            mime="image/png",
+            key=f"download-png-{selected}",
+        )
 else:
     st.info("分析できる銘柄がありません。銘柄コードと株価データ接続を確認してください。")
-
-st.divider()
-st.header("PostPrime投稿用 一括データ出力＆画像書き出し")
-st.caption(
-    "第0層のコメントをコピー用にまとめ、画像(A)は3チャートを縦結合、"
-    "画像(B)は多期間比較マトリックス単体で出力します。"
-)
-postprime_export_text = build_postprime_export_text(mode_name, export_comments)
-st.code(postprime_export_text, language=None)
-
-export_signature = hashlib.sha256(
-    json.dumps(
-        {
-            "mode": mode_key,
-            "comments": export_comments,
-            "figures": (
-                [figure.to_json() for _, figure in export_figures]
-                if export_figures
-                else []
-            ),
-            "ranking_period": (
-                ranking_period if export_figures else None
-            ),
-            "matrix_targets": (
-                list(filtered_matrix.index) if export_figures else []
-            ),
-            "rrg_highlights": sorted(highlighted_sectors) if export_figures else [],
-        },
-        ensure_ascii=False,
-        sort_keys=True,
-    ).encode("utf-8")
-).hexdigest()[:16]
-composite_image_key = f"postprime-image-a-{mode_key}"
-matrix_image_key = f"postprime-image-b-{mode_key}"
-composite_signature_key = f"{composite_image_key}-signature"
-matrix_signature_key = f"{matrix_image_key}-signature"
-
-if export_figures is None:
-    st.info("分析データがないため、画像出力は利用できません。")
-else:
-    image_columns = st.columns(2)
-    with image_columns[0]:
-        if st.button(
-            "画像出力(A)｜Gemini解析用・統合画像を生成",
-            key=f"generate-{composite_image_key}",
-            width="stretch",
-        ):
-            try:
-                st.session_state[composite_image_key] = compose_plotly_png(
-                    export_figures
-                )
-                st.session_state[composite_signature_key] = export_signature
-            except (ImportError, OSError, RuntimeError, ValueError) as exc:
-                st.session_state.pop(composite_image_key, None)
-                st.session_state.pop(composite_signature_key, None)
-                st.error(f"統合画像を生成できませんでした: {exc}")
-        if st.session_state.get(composite_signature_key) == export_signature:
-            st.download_button(
-                "画像出力(A)をダウンロード",
-                data=st.session_state[composite_image_key],
-                file_name=f"{mode_key}-postprime-dashboard.png",
-                mime="image/png",
-                key=f"download-{composite_image_key}",
-                width="stretch",
-            )
-
-    with image_columns[1]:
-        if st.button(
-            "画像出力(B)｜PostPrime添付用・マトリックスを生成",
-            key=f"generate-{matrix_image_key}",
-            width="stretch",
-        ):
-            try:
-                st.session_state[matrix_image_key] = render_plotly_png(matrix_figure)
-                st.session_state[matrix_signature_key] = export_signature
-            except (ImportError, OSError, RuntimeError, ValueError) as exc:
-                st.session_state.pop(matrix_image_key, None)
-                st.session_state.pop(matrix_signature_key, None)
-                st.error(f"マトリックス画像を生成できませんでした: {exc}")
-        if st.session_state.get(matrix_signature_key) == export_signature:
-            st.download_button(
-                "画像出力(B)をダウンロード",
-                data=st.session_state[matrix_image_key],
-                file_name=f"{mode_key}-postprime-matrix.png",
-                mime="image/png",
-                key=f"download-{matrix_image_key}",
-                width="stretch",
-            )
