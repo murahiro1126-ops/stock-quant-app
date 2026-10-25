@@ -4,72 +4,61 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from io import BytesIO
-import re
-import unicodedata
 
 import plotly.graph_objects as go
 
 PNG_EXPORT_SCALE = 2
-
-_EMOJI_PATTERN = re.compile(
-    r"[\U0001F000-\U0001FAFF\u2600-\u27BF]"
-    r"(?:[\uFE0E\uFE0F\u200D\u20E3\U0001F3FB-\U0001F3FF"
-    r"\U0001F000-\U0001FAFF\u2600-\u27BF])*"
+PNG_EMOJI_FONT_FAMILIES = (
+    "Noto Color Emoji",
+    "Segoe UI Emoji",
+    "Apple Color Emoji",
 )
-_EMOJI_LABELS = {
-    "🔥": "[HOT]",
-    "🚀": "[UP]",
-    "⚠": "[WARN]",
-    "💪": "[STRONG]",
-    "❄": "[COOL]",
-    "📈": "[CHART]",
-    "📉": "[DOWN]",
-    "✅": "[OK]",
-    "❌": "[NG]",
-    "🟢": "[POSITIVE]",
-    "🔴": "[NEGATIVE]",
-}
 
 
-def normalize_emoji_text(text: str) -> str:
-    """Replace emoji with readable ASCII labels for deterministic static exports."""
-    def replace(match: re.Match[str]) -> str:
-        emoji = match.group().replace("\ufe0e", "").replace("\ufe0f", "")
-        if emoji in _EMOJI_LABELS:
-            return _EMOJI_LABELS[emoji]
-
-        names = [
-            unicodedata.name(character, "ICON")
-            for character in emoji
-            if character not in {"\u200d", "\u20e3"}
-            and not "\U0001F3FB" <= character <= "\U0001F3FF"
-        ]
-        return "".join(f"[{name}]" for name in names) or "[ICON]"
-
-    return _EMOJI_PATTERN.sub(replace, text)
+def _with_emoji_font_fallbacks(family: object) -> str:
+    families = [
+        name.strip()
+        for name in str(family or "Noto Sans CJK JP").split(",")
+        if name.strip() and name.strip().lower() != "sans-serif"
+    ]
+    for name in PNG_EMOJI_FONT_FAMILIES:
+        if name not in families:
+            families.append(name)
+    families.append("sans-serif")
+    return ", ".join(families)
 
 
-def _normalize_plotly_value(value: object) -> object:
-    if isinstance(value, str):
-        return normalize_emoji_text(value)
+def _prepare_plotly_value(value: object) -> object:
     if isinstance(value, dict):
-        return {
-            key: _normalize_plotly_value(item)
+        prepared = {
+            key: _prepare_plotly_value(item)
             for key, item in value.items()
         }
+        for key, font in prepared.items():
+            if key.lower().endswith("font") and isinstance(font, dict):
+                font["family"] = _with_emoji_font_fallbacks(
+                    font.get("family")
+                )
+        return prepared
     if isinstance(value, (list, tuple)):
-        return [_normalize_plotly_value(item) for item in value]
+        return [_prepare_plotly_value(item) for item in value]
     if hasattr(value, "tolist"):
-        return _normalize_plotly_value(value.tolist())
+        return _prepare_plotly_value(value.tolist())
     if hasattr(value, "item"):
-        return _normalize_plotly_value(value.item())
+        return _prepare_plotly_value(value.item())
     return value
 
 
 def prepare_figure_for_png(figure: go.Figure) -> go.Figure:
-    """Copy a Plotly figure and replace emoji unsupported by server-side fonts."""
-    normalized = _normalize_plotly_value(figure.to_plotly_json())
-    return go.Figure(normalized)
+    """Copy a Plotly figure and add emoji-font fallbacks without altering text."""
+    prepared = _prepare_plotly_value(figure.to_plotly_json())
+    layout = prepared.setdefault("layout", {})
+    layout_font = layout.setdefault("font", {})
+    if isinstance(layout_font, dict):
+        layout_font["family"] = _with_emoji_font_fallbacks(
+            layout_font.get("family")
+        )
+    return go.Figure(prepared)
 
 
 def build_postprime_export_text(
@@ -100,7 +89,7 @@ def render_plotly_png(
     height: int | None = None,
     scale: int = PNG_EXPORT_SCALE,
 ) -> bytes:
-    """Render a font-safe, high-resolution Plotly PNG for any app chart."""
+    """Render a high-resolution Plotly PNG with emoji-font fallbacks."""
     if width < 1 or (height is not None and height < 1) or scale < 1:
         raise ValueError("画像幅・高さ・解像度スケールは1以上にしてください。")
     render_options: dict[str, int | str] = {
@@ -153,11 +142,10 @@ def compose_plotly_png(
     font = ImageFont.load_default(size=14 * scale)
     top = 0
     for title, image in rendered:
-        safe_title = normalize_emoji_text(title)
-        if safe_title.isascii():
+        if title.isascii():
             draw.text(
                 (16 * scale, top + 8 * scale),
-                safe_title,
+                title,
                 fill="#26374a",
                 font=font,
             )
