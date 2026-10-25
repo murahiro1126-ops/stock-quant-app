@@ -13,17 +13,20 @@ PNG_EMOJI_FONT_FAMILIES = (
     "Segoe UI Emoji",
     "Apple Color Emoji",
 )
+_EMOJI_FONT_FAMILY_NAMES = {
+    family.lower() for family in PNG_EMOJI_FONT_FAMILIES
+}
 
 
 def _with_emoji_font_fallbacks(family: object) -> str:
-    families = [
+    existing_families = [
         name.strip()
         for name in str(family or "Noto Sans CJK JP").split(",")
-        if name.strip() and name.strip().lower() != "sans-serif"
+        if name.strip()
+        and name.strip().lower()
+        not in {"sans-serif", *_EMOJI_FONT_FAMILY_NAMES}
     ]
-    for name in PNG_EMOJI_FONT_FAMILIES:
-        if name not in families:
-            families.append(name)
+    families = [*PNG_EMOJI_FONT_FAMILIES, *existing_families]
     families.append("sans-serif")
     return ", ".join(families)
 

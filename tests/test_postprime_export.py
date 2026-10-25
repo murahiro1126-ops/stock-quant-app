@@ -74,9 +74,13 @@ def test_render_plotly_png_preserves_icons_and_uses_emoji_font_fallbacks(monkeyp
     assert all(
         name in trace_font_family for name in PNG_EMOJI_FONT_FAMILIES
     ), repr(trace_font_family)
+    assert trace_font_family.startswith(PNG_EMOJI_FONT_FAMILIES[0])
     assert all(
         name in rendered_json["layout"]["font"]["family"]
         for name in PNG_EMOJI_FONT_FAMILIES
+    )
+    assert rendered_json["layout"]["font"]["family"].startswith(
+        PNG_EMOJI_FONT_FAMILIES[0]
     )
     assert "🔥" in str(figure.to_plotly_json())
 
