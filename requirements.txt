@@ -1,6 +1,7 @@
 streamlit>=1.49
 plotly>=5.20,<6
 kaleido>=0.2.1,<1.0
+Pillow>=10.0
 yfinance>=0.2.40
 pytrends>=4.9.2
 pandas>=2.0

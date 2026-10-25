@@ -29,6 +29,11 @@ from commentator import (
     generate_postprime_text,
     get_gemini_api_key,
 )
+from postprime_export import (
+    build_postprime_export_text,
+    compose_plotly_png,
+    render_plotly_png,
+)
 from sector_flow import (
     MATRIX_ACCELERATION_THRESHOLD,
     MATRIX_SIGNAL_LABELS,
@@ -155,6 +160,9 @@ def load_universe_prices(
     return fetch_basket_close_prices(dict(baskets))
 
 
+export_figures: tuple[tuple[str, go.Figure], ...] | None = None
+export_comments: dict[str, str] = {}
+
 st.header(f"第0層｜{mode_name} 資金循環")
 if is_portfolio_mode:
     st.caption(
@@ -247,7 +255,8 @@ else:
             "クリック選択中: "
             + "、".join(sorted(selected_sectors & set(sector_metrics["Sector"])))
         )
-    st.info(get_rrg_comment(sector_metrics))
+    rrg_comment = get_rrg_comment(sector_metrics)
+    st.info(rrg_comment)
 
     st.subheader(f"{mode_name} モメンタム TOP5 / ワースト5")
     ranking_period_label = st.segmented_control(
@@ -281,7 +290,8 @@ else:
         },
         key=f"universe-ranking-chart-{mode_key}-{ranking_period}",
     )
-    st.info(get_ranking_comment(sector_metrics, ranking_period))
+    ranking_comment = get_ranking_comment(sector_metrics, ranking_period)
+    st.info(ranking_comment)
 
     st.subheader(f"{mode_name} 多期間比較マトリックス")
     st.caption(
@@ -306,6 +316,10 @@ else:
         if selected_signals
         else matrix_data
     )
+    matrix_figure = build_matrix_figure(
+        sector_metrics,
+        sectors=list(filtered_matrix.index),
+    )
     st.dataframe(
         style_matrix_dataframe(filtered_matrix),
         width="stretch",
@@ -318,10 +332,6 @@ else:
         alt=f"{mode_name}のリターン比較とパターン別初動判定",
     )
     with st.expander("マトリックスをPNG画像で表示・保存"):
-        matrix_figure = build_matrix_figure(
-            sector_metrics,
-            sectors=list(filtered_matrix.index),
-        )
         st.plotly_chart(
             matrix_figure,
             width="stretch",
@@ -336,7 +346,18 @@ else:
             },
             key=f"universe-matrix-chart-{mode_key}",
         )
-    st.info(get_matrix_comment(sector_metrics))
+    matrix_comment = get_matrix_comment(sector_metrics)
+    st.info(matrix_comment)
+    export_figures = (
+        ("A. RRG", rrg_figure),
+        ("B. Momentum ranking", ranking_figure),
+        ("C. Multi-period matrix", matrix_figure),
+    )
+    export_comments = {
+        "RRG自動コメント": rrg_comment,
+        "モメンタム自動コメント": ranking_comment,
+        "多期間比較マトリックス自動コメント（初動銘柄含む）": matrix_comment,
+    }
 
 st.subheader("ウォッチリスト管理")
 
@@ -893,3 +914,91 @@ if rows:
     st.code(st.session_state[postprime_cache_key], language=None)
 else:
     st.info("分析できる銘柄がありません。銘柄コードと株価データ接続を確認してください。")
+
+st.divider()
+st.header("PostPrime投稿用 一括データ出力＆画像書き出し")
+st.caption(
+    "第0層のコメントをコピー用にまとめ、画像(A)は3チャートを縦結合、"
+    "画像(B)は多期間比較マトリックス単体で出力します。"
+)
+postprime_export_text = build_postprime_export_text(mode_name, export_comments)
+st.code(postprime_export_text, language=None)
+
+export_signature = hashlib.sha256(
+    json.dumps(
+        {
+            "mode": mode_key,
+            "comments": export_comments,
+            "figures": (
+                [figure.to_json() for _, figure in export_figures]
+                if export_figures
+                else []
+            ),
+            "ranking_period": (
+                ranking_period if export_figures else None
+            ),
+            "matrix_targets": (
+                list(filtered_matrix.index) if export_figures else []
+            ),
+            "rrg_highlights": sorted(highlighted_sectors) if export_figures else [],
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+    ).encode("utf-8")
+).hexdigest()[:16]
+composite_image_key = f"postprime-image-a-{mode_key}"
+matrix_image_key = f"postprime-image-b-{mode_key}"
+composite_signature_key = f"{composite_image_key}-signature"
+matrix_signature_key = f"{matrix_image_key}-signature"
+
+if export_figures is None:
+    st.info("分析データがないため、画像出力は利用できません。")
+else:
+    image_columns = st.columns(2)
+    with image_columns[0]:
+        if st.button(
+            "画像出力(A)｜Gemini解析用・統合画像を生成",
+            key=f"generate-{composite_image_key}",
+            width="stretch",
+        ):
+            try:
+                st.session_state[composite_image_key] = compose_plotly_png(
+                    export_figures
+                )
+                st.session_state[composite_signature_key] = export_signature
+            except (ImportError, OSError, RuntimeError, ValueError) as exc:
+                st.session_state.pop(composite_image_key, None)
+                st.session_state.pop(composite_signature_key, None)
+                st.error(f"統合画像を生成できませんでした: {exc}")
+        if st.session_state.get(composite_signature_key) == export_signature:
+            st.download_button(
+                "画像出力(A)をダウンロード",
+                data=st.session_state[composite_image_key],
+                file_name=f"{mode_key}-postprime-dashboard.png",
+                mime="image/png",
+                key=f"download-{composite_image_key}",
+                width="stretch",
+            )
+
+    with image_columns[1]:
+        if st.button(
+            "画像出力(B)｜PostPrime添付用・マトリックスを生成",
+            key=f"generate-{matrix_image_key}",
+            width="stretch",
+        ):
+            try:
+                st.session_state[matrix_image_key] = render_plotly_png(matrix_figure)
+                st.session_state[matrix_signature_key] = export_signature
+            except (ImportError, OSError, RuntimeError, ValueError) as exc:
+                st.session_state.pop(matrix_image_key, None)
+                st.session_state.pop(matrix_signature_key, None)
+                st.error(f"マトリックス画像を生成できませんでした: {exc}")
+        if st.session_state.get(matrix_signature_key) == export_signature:
+            st.download_button(
+                "画像出力(B)をダウンロード",
+                data=st.session_state[matrix_image_key],
+                file_name=f"{mode_key}-postprime-matrix.png",
+                mime="image/png",
+                key=f"download-{matrix_image_key}",
+                width="stretch",
+            )
