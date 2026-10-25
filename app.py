@@ -41,6 +41,7 @@ from sector_flow import (
     calculate_sector_metrics,
     fetch_basket_close_prices,
     fetch_ticker_names,
+    get_ticker_name,
     get_matrix_comment,
     get_ranking_comment,
     get_rrg_comment,
@@ -94,12 +95,15 @@ def load_ticker_names(
 
 
 if is_portfolio_mode:
-    ticker_names = active_watchlist
-    analysis_baskets = {
-        f"{company}（{ticker.removesuffix('.T')}）": (ticker,)
+    ticker_names = {
+        ticker: get_ticker_name(ticker, company) or company
         for ticker, company in active_watchlist.items()
     }
-    screening_universe = dict(active_watchlist)
+    analysis_baskets = {
+        f"{company}（{ticker.removesuffix('.T')}）": (ticker,)
+        for ticker, company in ticker_names.items()
+    }
+    screening_universe = dict(ticker_names)
 else:
     tse33_tickers = tuple(
         sorted(
@@ -126,7 +130,7 @@ else:
         )
     analysis_baskets = dict(TSE33_SECTOR_TICKERS)
     screening_universe = {
-        ticker: ticker_names.get(ticker, "銘柄名未取得")
+        ticker: get_ticker_name(ticker, ticker_names.get(ticker)) or "銘柄名未取得"
         for ticker in tse33_tickers
     }
 

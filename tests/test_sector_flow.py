@@ -19,6 +19,7 @@ from sector_flow import (
     fetch_basket_close_prices,
     fetch_sector_close_prices,
     fetch_ticker_names,
+    get_ticker_name,
     get_matrix_comment,
     get_ranking_comment,
     get_rrg_comment,
@@ -121,7 +122,7 @@ def test_fetch_ticker_names_returns_names_and_reports_lookup_errors(monkeypatch)
     def fake_ticker(ticker):
         class FakeTicker:
             def get_info(self):
-                if ticker == "0000.T":
+                if ticker == "9999.T":
                     raise ValueError("銘柄情報なし")
                 return {"shortName": "ニッスイ"}
 
@@ -129,10 +130,27 @@ def test_fetch_ticker_names_returns_names_and_reports_lookup_errors(monkeypatch)
 
     monkeypatch.setattr("yfinance.Ticker", fake_ticker)
 
-    names, errors = fetch_ticker_names(("1332.T", "0000.T"))
+    names, errors = fetch_ticker_names(("1332.T", "9999.T"))
 
     assert names == {"1332.T": "ニッスイ"}
-    assert errors == {"0000.T": "銘柄情報なし"}
+    assert errors == {"9999.T": "銘柄情報なし"}
+
+
+def test_ticker_name_master_supports_ticker_formats_and_overrides_fallback():
+    assert get_ticker_name("1332.T") == "ニッスイ"
+    assert get_ticker_name("1332") == "ニッスイ"
+    assert get_ticker_name("1605.T", "INPEX Corporation") == "INPEX"
+    assert get_ticker_name("9999.T", "Unknown Corp.") == "Unknown Corp."
+
+
+def test_ticker_name_master_covers_all_tse33_basket_tickers():
+    basket_tickers = {
+        ticker
+        for tickers in TSE33_SECTOR_TICKERS.values()
+        for ticker in tickers
+    }
+
+    assert all(get_ticker_name(ticker) for ticker in basket_tickers)
 
 
 def test_calculate_sector_metrics_builds_shared_returns_and_early_flag(
