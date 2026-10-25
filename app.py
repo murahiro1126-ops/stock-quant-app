@@ -628,11 +628,10 @@ if rows:
     )
 
     screening_export_text = (
-        f"以下は{mode_name}の高速スクリーニング結果です。"
-        "買い確度・売り確度・トレンド・値動き・恐怖指数を比較し、"
-        "リスクと数値根拠を明示したうえで、詳細分析に進める候補銘柄を"
-        "最大3銘柄選んでください。売買を断定せず、該当候補がない場合は"
-        "その旨を説明してください。\n\n"
+        f"ギャルたん！{mode_name}の高速スクリーニング結果を共有するね！\n"
+        "ここから詳細分析に進める候補銘柄3つを世界最高峰のギャル系クオンツアナリストのギャルたんの視点で\n"
+        "優先度付きおすすめ銘柄TOP1〜3を理由付きで提案してね♡該当候補がない場合は\n"
+        "無理しないでその旨を説明してくれたらいいからね（相場だからそんな日もあるよねー）。\n\n"
         "【スクリーニング結果】\n"
         f"{summary.to_string()}"
     )
@@ -1019,26 +1018,9 @@ if rows:
     detail_export_text = (
         f"ギャルたん！{selected} ({company})の最新クオンツ分析データを"
         "共有するね！\n"
-        "以下の詳細データとクオンツ直感解説を参考に、PostPrime投稿用の"
-        "記事を作成してください。数値を誇張せず、リスクと分析上の注意点も"
-        "含めてください。\n\n"
-        "【個別銘柄の詳細データ】\n"
-        f"銘柄コード: {selected}\n"
-        f"銘柄名: {company}\n"
-        f"買い確度: {current_score['buy_confidence']}%\n"
-        f"売り確度: {current_score['sell_confidence']}%\n"
-        f"値位置: {current_score['range_status']}\n"
-        f"恐怖指数: {fear_greed_value}\n"
-        f"AI信頼度: ランク{rank}（{confidence_score}%）\n"
-        f"バックテスト勝率: {win_rate:.1f}% "
-        f"（{backtest['trade_count']}回）\n"
-        f"現在の判定理由（買い）: "
-        f"{' / '.join(current_score['buy_reasons']) or '条件なし'}\n"
-        f"現在の判定理由（売り）: "
-        f"{' / '.join(current_score['sell_reasons']) or '条件なし'}\n\n"
-        "【ギャルたんクオンツの直感解説】\n"
-        f"{st.session_state[comment_cache_key]}\n\n"
-        "【PostPrime記事作成案】\n"
+        "以下の詳細データと添付した詳細分析グラフ参考に、PostPrime投稿用の"
+        "記事を作成してくれるかな？\n\n"
+        "【詳細データ】\n"
         f"{st.session_state[postprime_cache_key]}"
     )
     st.code(detail_export_text, language=None)

@@ -71,9 +71,8 @@ def build_postprime_export_text(
     """Combine a reusable article prompt with named analysis-comment sections."""
     prompt = (
         f"ギャルたん！{mode_name}の最新クオンツ分析データと"
-        "添付画像(A)を共有するね！\n"
-        "以下の分析コメントと画像を参考に、数値を誇張せず、"
-        "リスクにも触れたPostPrime投稿用の記事を作成してください。"
+        "第0層 東証33業種 資金循環の分析画像(RRG、モメンタム、多期間比較マトリックス)を共有するね！\n"
+        "以下の分析コメントと分析画像を参考に、PostPrime投稿用の記事を作成してくれるかな？"
     )
     sections = [
         f"【{title}】\n{comment.strip()}"
