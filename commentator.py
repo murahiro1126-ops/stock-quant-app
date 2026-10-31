@@ -9,7 +9,7 @@ from math import isfinite
 from typing import Any
 
 LOGGER = logging.getLogger(__name__)
-MODEL = "gemini-2.5-flash-lite"
+MODEL = "gemini-3.8-flash"
 
 
 class GeminiRequestError(Exception):

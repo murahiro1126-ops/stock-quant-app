@@ -146,7 +146,7 @@ def test_get_gemini_text_uses_sdk_config_and_returns_text(monkeypatch):
     assert result == "Geminiの解説"
     assert captured["client"]["api_key"] == "streamlit-secret"
     assert captured["client"]["http_options"].timeout == 60_000
-    assert captured["request"]["model"] == "gemini-2.5-flash-lite"
+    assert captured["request"]["model"] == "gemini-3.8-flash"
     assert captured["request"]["config"].system_instruction == "system instruction"
 
 

@@ -32,7 +32,7 @@ from sector_flow import (
     get_ticker_name,
 )
 
-MODEL_NAME = "gemini-2.5-flash"
+MODEL_NAME = "gemini-3.8-flash"
 MACRO_MODE = "東証33業種分析（マクロ）"
 MICRO_MODE = "個別銘柄分析（ミクロ）"
 
