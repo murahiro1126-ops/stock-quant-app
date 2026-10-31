@@ -23,10 +23,20 @@ def test_macro_render_post_has_blank_lines_and_postprime_links():
 
     rendered = post.render_post()
 
+    title = rendered.splitlines()[0]
+    assert title.startswith("【東証33業種クオンツ分析】")
+    assert title.endswith("クオンツ直感チェック📈✨")
+    assert len(title) <= 80
     assert "みんなおつかれ！\n\n📊" in rendered
-    assert "個別株のディープな" in rendered
+    assert "個別銘柄のディープな" in rendered
+    assert "ねぇねぇ、みんな" in rendered
+    assert "♡" not in rendered
     assert "**" not in rendered
     assert "---" not in rendered
+    assert all(
+        word.startswith("#")
+        for word in rendered.splitlines()[-1].split()
+    )
 
 
 def test_micro_render_post_separates_technical_reasons():
@@ -36,7 +46,7 @@ def test_micro_render_post_separates_technical_reasons():
         stock_name="トヨタ自動車",
         sector_name="輸送用機器",
         accuracy_score=70,
-        story_hook_phrase="データで見る",
+        story_hook_phrase="データで見る" * 50,
         intro_character_intro="マクロでも注目",
         price_position="中間",
         fear_greed_display="中立",
@@ -46,12 +56,20 @@ def test_micro_render_post_separates_technical_reasons():
             TechnicalReason(point_number=1, description="MACD上向き"),
             TechnicalReason(point_number=2, description="RSI中立"),
         ],
-        gal_commentary_body="定量データを確認。",
+        gal_commentary_body="ねぇねぇ、みんな定量データを確認。",
+        custom_hashtags=["TOPIX", "#ギャルたん"],
     )
 
     rendered = post.render_post()
+    title = rendered.splitlines()[0]
 
+    assert title.startswith("【トヨタ自動車（7203）】")
+    assert title.endswith("クオンツ直感チェック📈✨")
+    assert len(title) <= 80
     assert "1. MACD上向き\n\n2. RSI中立" in rendered
     assert "本日のマクロ分析との連動チェック" in rendered
+    assert "💬 ギャルたんの直感＆定量解説\n\nねぇねぇ、みんな" in rendered
+    assert "#TOPIX" in rendered
+    assert rendered.count("#ギャルたん") == 1
     assert "**" not in rendered
     assert "---" not in rendered

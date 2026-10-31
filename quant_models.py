@@ -11,7 +11,7 @@ GYARUTAN_SYSTEM_INSTRUCTION = """
 
 【ギャルたん・詳細プロフィール】
 ・基本情報：都内在住の20代ギャル系クオンツ投資家。一人称は「ギャルたん」、フォロワーへの呼びかけは「みんな」。
-・キャッチコピー：「数字で未来をつくる♡」「Good Trades, Better Tomorrow♡」
+・キャッチコピー：「数字で未来をつくる💕」「Good Trades, Better Tomorrow💕」
 ・ビジュアル＆ライフスタイル：金髪ツインテールにメガネ、Quantパーカーを愛用。マルチモニターでPython/Pandas/RRG/モメンタム分析を常時ぶん回している。プライベート（GYARUTAN'S CHILL ZONE）では将棋で勝負勘を磨き、グミやスナックを片手に市場をチェックする。
 ・投資哲学：感情論や噂話、SNSの煽り（雰囲気トレード）を徹底的に嫌う。データ・確率・多期間の相対強度（アルファ）に基づく冷徹かつスマートな投資戦略を愛する。
 ・トーン＆マナー：
@@ -22,7 +22,46 @@ GYARUTAN_SYSTEM_INSTRUCTION = """
 【出力における厳格なルール】
 ・Markdownの太字（**）や水平線（---）はPostPrimeのフォーマット崩れの原因になるため絶対に使用しないこと。
 ・単なる無根拠な煽りは絶対に行わず、必ず定量的根拠（RRG、騰落率、モメンタム、業種間格差など）をバックボーンに置くこと。
+・投稿タイトルは全角・半角を問わず80文字以内にすること。指定されたタイトル接頭辞と「クオンツ直感チェック📈✨」は必ず保持すること。
+・直感解説の本文は必ず「ねぇねぇ、みんな」から始めること。
 """
+
+TITLE_SUFFIX = "クオンツ直感チェック📈✨"
+COMMENTARY_OPENING = "ねぇねぇ、みんな"
+
+
+def _bounded_title(prefix: str, middle: str) -> str:
+    if len(prefix) + len(TITLE_SUFFIX) > 80:
+        raise ValueError("タイトル接頭辞が長すぎるため、80文字以内に収まりません。")
+    available_length = 80 - len(prefix) - len(TITLE_SUFFIX)
+    return f"{prefix}{middle[:available_length]}{TITLE_SUFFIX}"
+
+
+def _commentary_with_fixed_opening(text: str) -> str:
+    commentary = text.strip()
+    for existing_opening in (COMMENTARY_OPENING, "ねぇねぇみんな、"):
+        if commentary.startswith(existing_opening):
+            commentary = commentary[len(existing_opening) :].lstrip("、。 　")
+            break
+    return f"{COMMENTARY_OPENING}、{commentary}" if commentary else COMMENTARY_OPENING
+
+
+def _without_commentary_opening(text: str) -> str:
+    commentary = text.strip()
+    for existing_opening in (COMMENTARY_OPENING, "ねぇねぇみんな、"):
+        if commentary.startswith(existing_opening):
+            return commentary[len(existing_opening) :].lstrip("、。 　")
+    return commentary
+
+
+def _with_hash_prefix(tags: list[str]) -> list[str]:
+    normalized: list[str] = []
+    for tag in tags:
+        for word in tag.split():
+            clean_word = word.lstrip("#")
+            if clean_word:
+                normalized.append(f"#{clean_word}")
+    return normalized
 
 
 class MarketCondition(str, Enum):
@@ -77,10 +116,12 @@ class MacroSectorAnalysisPost(BaseModel):
     )
 
     def render_post(self) -> str:
+        title_prefix = "【東証33業種クオンツ分析】"
+        title_middle = (
+            f"{self.title_headline}「{self.title_target_word}セクター」はココだ！⚡"
+        )
         lines = [
-            f"【東証33業種クオンツ分析】{self.title_headline}"
-            f"「{self.title_target_word}セクター」はココだ！⚡"
-            "クオンツ直感チェック📈✨",
+            _bounded_title(title_prefix, title_middle),
             self.greeting_summary,
             "📊 本日の初動判定データ（画像参照）",
         ]
@@ -126,14 +167,14 @@ class MacroSectorAnalysisPost(BaseModel):
         lines.extend(
             [
                 "💬 ギャルたんの直感解説",
-                self.gal_commentary,
+                _commentary_with_fixed_opening(self.gal_commentary),
                 "💡 ギャルたんからの個別株ウォッチ予告",
                 "今日の33業種マクロ分析で急浮上した注目セクターの中から、"
                 "さらに大口マネーが集中する「本命個別銘柄のディープな"
                 "ミクロ分析」も順次公開していくから、フォローして"
                 "見逃さないようにしてね！👀✨",
                 self.closing_question,
-                " ".join(self.hashtags),
+                " ".join(_with_hash_prefix(self.hashtags)),
             ]
         )
         return "\n\n".join(line for line in lines if line)
@@ -189,9 +230,10 @@ class MicroStockAnalysisPost(BaseModel):
         else:
             signal_text = "中立シグナル点灯⚡"
 
+        title_prefix = f"【{self.stock_name}（{self.stock_code}）】"
+        title_middle = f"{signal_text}{self.story_hook_phrase}⚡"
         lines = [
-            f"【{self.stock_name}（{self.stock_code}）】{signal_text}"
-            f"{self.story_hook_phrase}⚡クオンツ直感チェック📈✨",
+            _bounded_title(title_prefix, title_middle),
             f"みんなおつかれ〜！👋✨ {self.intro_character_intro}🧠🔥",
             "📊 本日の詳細クオンツデータ（画像参照）",
             f"・株価位置・環境：{self.price_position}",
@@ -207,8 +249,10 @@ class MicroStockAnalysisPost(BaseModel):
         lines.extend(
             [
                 "💬 ギャルたんの直感＆定量解説",
-                "ねぇねぇみんな、今回のデータとチャートを見てよ！"
-                f"{self.gal_commentary_body}",
+                _commentary_with_fixed_opening(
+                    "今回のデータとチャートを見てよ！"
+                    f"{_without_commentary_opening(self.gal_commentary_body)}"
+                ),
                 "ただし！ここでクオンツ流の冷徹なプロ視点＆リスク管理の"
                 "アドバイス☝️💡\n"
                 "一括でフルツッパするんじゃなくて、押し目を丁寧に拾ったり"
@@ -231,10 +275,6 @@ class MicroStockAnalysisPost(BaseModel):
             "#PostPrime",
         ]
         sector_tag = f"#{self.sector_name}"
-        user_tags = [
-            tag
-            for tag in self.custom_hashtags
-            if tag not in default_tags and tag != sector_tag
-        ]
-        lines.append(" ".join(default_tags + [sector_tag] + user_tags))
+        all_tags = _with_hash_prefix(default_tags + [sector_tag] + self.custom_hashtags)
+        lines.append(" ".join(dict.fromkeys(all_tags)))
         return "\n\n".join(line for line in lines if line)
