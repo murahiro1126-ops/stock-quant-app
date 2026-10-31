@@ -54,9 +54,25 @@ from sector_flow import (
     style_matrix_dataframe,
 )
 from watchlist_store import load_watchlist, save_watchlist
+from postprime_generator import (
+    DASHBOARD_MODE,
+    MACRO_MODE,
+    MICRO_MODE,
+    render_postprime_generator,
+)
 
 st.set_page_config(page_title="日本株シグナル検証", page_icon="📈", layout="wide")
 GEMINI_API_KEY = get_gemini_api_key()
+selected_app_mode = st.sidebar.selectbox(
+    "アプリモード",
+    options=(DASHBOARD_MODE, MACRO_MODE, MICRO_MODE),
+    key="app-mode",
+)
+
+if selected_app_mode != DASHBOARD_MODE:
+    render_postprime_generator(selected_app_mode, GEMINI_API_KEY)
+    st.stop()
+
 
 st.title("日本株テクニカル・シグナル検証")
 st.caption(
