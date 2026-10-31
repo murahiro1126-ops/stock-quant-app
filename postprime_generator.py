@@ -19,6 +19,7 @@ from analyzer import (
 )
 from commentator import get_gemini_api_key
 from config import BACKTEST_PERIOD, BACKTEST_INITIAL_CAPITAL, SIGNAL_THRESHOLD
+from gemini_retry import generate_with_retries
 from quant_models import (
     GYARUTAN_SYSTEM_INSTRUCTION,
     MacroSectorAnalysisPost,
@@ -75,17 +76,24 @@ def _request_structured_post(
     try:
         with genai.Client(
             api_key=api_key,
-            http_options=types.HttpOptions(timeout=60_000),
+            http_options=types.HttpOptions(
+                timeout=60_000,
+                retry_options=types.HttpRetryOptions(attempts=1),
+            ),
         ) as client:
-            response = client.models.generate_content(
-                model=MODEL_NAME,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    system_instruction=GYARUTAN_SYSTEM_INSTRUCTION,
-                    response_mime_type="application/json",
-                    response_schema=model_type,
-                    temperature=0.4,
+            response = generate_with_retries(
+                lambda: client.models.generate_content(
+                    model=MODEL_NAME,
+                    contents=prompt,
+                    config=types.GenerateContentConfig(
+                        system_instruction=GYARUTAN_SYSTEM_INSTRUCTION,
+                        response_mime_type="application/json",
+                        response_schema=model_type,
+                        temperature=0.4,
+                    ),
                 ),
+                api_error_type=errors.APIError,
+                timeout_error_types=(httpx.TimeoutException, TimeoutError),
             )
     except (httpx.TimeoutException, TimeoutError) as exc:
         raise RuntimeError(
