@@ -75,7 +75,7 @@ def _request_structured_post(
     try:
         with genai.Client(
             api_key=api_key,
-            http_options=types.HttpOptions(timeout=60),
+            http_options=types.HttpOptions(timeout=60_000),
         ) as client:
             response = client.models.generate_content(
                 model=MODEL_NAME,

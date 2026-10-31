@@ -15,7 +15,7 @@ def test_request_structured_post_reports_gemini_timeout(monkeypatch):
 
     class FakeClient:
         def __init__(self, *, api_key, http_options):
-            observed_timeout["seconds"] = http_options.timeout
+            observed_timeout["milliseconds"] = http_options.timeout
             self.models = self
 
         def __enter__(self):
@@ -49,4 +49,4 @@ def test_request_structured_post_reports_gemini_timeout(monkeypatch):
             memo="",
         )
 
-    assert observed_timeout["seconds"] == 60
+    assert observed_timeout["milliseconds"] == 60_000
