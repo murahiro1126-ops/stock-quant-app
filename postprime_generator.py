@@ -87,6 +87,10 @@ def _request_structured_post(
                     temperature=0.4,
                 ),
             )
+    except (httpx.TimeoutException, TimeoutError) as exc:
+        raise RuntimeError(
+            "Gemini APIの応答が60秒以内に届かなかったため、タイムアウトしました。"
+        ) from exc
     except (errors.APIError, httpx.HTTPError, OSError) as exc:
         raise RuntimeError(f"Gemini APIの呼び出しに失敗しました: {exc}") from exc
 

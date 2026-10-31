@@ -1,20 +1,1092 @@
+from __future__ import annotations
+
+import hashlib
+import json
+
+import numpy as np
+import pandas as pd
+import plotly.graph_objects as go
 import streamlit as st
+from plotly.subplots import make_subplots
 
-from postprime_generator import (
-    MACRO_MODE,
-    MICRO_MODE,
-    render_postprime_generator,
+from analyzer import (
+    add_signal_flags,
+    backtest_strategy,
+    calculate_indicators,
+    calculate_fear_greed_index,
+    fetch_stock_data,
+    get_google_trends_sentiment,
+    score_signal,
 )
+from config import (
+    BACKTEST_INITIAL_CAPITAL,
+    BACKTEST_PERIOD,
+    SIGNAL_THRESHOLD,
+)
+from chart_format import CHART_FONT_FAMILY, build_chart_title
+from commentator import (
+    generate_ai_comment,
+    generate_postprime_text,
+    get_gemini_api_key,
+)
+from postprime_export import (
+    build_postprime_export_text,
+    compose_plotly_png,
+    render_plotly_png,
+)
+from sector_flow import (
+    MATRIX_ACCELERATION_THRESHOLD,
+    MATRIX_SIGNAL_LABELS,
+    RANKING_PERIODS,
+    TSE33_SECTOR_TICKERS,
+    build_matrix_figure,
+    build_matrix_dataframe,
+    build_ranking_figure,
+    build_rrg_figure,
+    calculate_sector_metrics,
+    fetch_basket_close_prices,
+    fetch_ticker_names,
+    get_ticker_name,
+    get_matrix_comment,
+    get_ranking_comment,
+    get_rrg_comment,
+    get_rrg_selected_sectors,
+    style_matrix_dataframe,
+)
+from watchlist_store import load_watchlist, save_watchlist
 
-st.set_page_config(
-    page_title="PostPrime自動投稿生成",
-    page_icon="📈",
-    layout="wide",
-)
+st.set_page_config(page_title="日本株シグナル検証", page_icon="📈", layout="wide")
 
-selected_mode = st.sidebar.selectbox(
-    "投稿モード",
-    options=(MACRO_MODE, MICRO_MODE),
-    key="postprime-app-mode",
+APP_MODE_ANALYSIS = "日本株分析ダッシュボード"
+APP_MODE_POSTPRIME = "PostPrimeワンショットモード"
+app_mode = st.sidebar.selectbox(
+    "アプリモード",
+    options=(APP_MODE_ANALYSIS, APP_MODE_POSTPRIME),
+    key="app-mode",
 )
-render_postprime_generator(selected_mode)
+if app_mode == APP_MODE_POSTPRIME:
+    from postprime_generator import (
+        MACRO_MODE,
+        MICRO_MODE,
+        render_postprime_generator,
+    )
+
+    postprime_mode = st.sidebar.selectbox(
+        "PostPrime分析モード",
+        options=(MACRO_MODE, MICRO_MODE),
+        key="postprime-analysis-mode",
+    )
+    render_postprime_generator(postprime_mode)
+    st.stop()
+
+GEMINI_API_KEY = get_gemini_api_key()
+
+st.title("日本株テクニカル・シグナル検証")
+st.caption(
+    "テクニカル・センチメント・値位置を使った参考分析です。"
+    "バックテスト結果や信頼度ランクは将来の利益を保証するものではありません。"
+)
+if GEMINI_API_KEY is None:
+    st.caption("GEMINI_API_KEY未設定のため、解説と投稿文はルールベースで表示します。")
+
+try:
+    active_watchlist = load_watchlist()
+except (OSError, ValueError) as exc:
+    active_watchlist = {}
+    watchlist_error = str(exc)
+else:
+    watchlist_error = None
+
+ANALYSIS_MODES = (
+    "🌐 東証33業種モード（PostPrime投稿・市場全体分析用）",
+    "💼 Myポートフォリオモード（プライベート・保有/注目銘柄分析用）",
+)
+selected_mode = st.radio(
+    "分析対象モード",
+    options=ANALYSIS_MODES,
+    horizontal=True,
+    key="analysis-mode",
+    help="第0層のRRG・モメンタム・マトリックスと第1層のスクリーニング対象を一括で切り替えます。",
+)
+is_portfolio_mode = selected_mode == ANALYSIS_MODES[1]
+mode_key = "portfolio" if is_portfolio_mode else "tse33"
+mode_name = "Myポートフォリオ" if is_portfolio_mode else "東証33業種"
+if is_portfolio_mode and watchlist_error is not None:
+    st.error(f"ウォッチリストを読み込めません: {watchlist_error}")
+
+
+@st.cache_data(ttl=86400, max_entries=2, show_spinner=False)
+def load_ticker_names(
+    tickers: tuple[str, ...],
+) -> tuple[dict[str, str], dict[str, str]]:
+    return fetch_ticker_names(tickers)
+
+
+if is_portfolio_mode:
+    ticker_names = {
+        ticker: get_ticker_name(ticker, company) or company
+        for ticker, company in active_watchlist.items()
+    }
+    analysis_baskets = {
+        f"{company}（{ticker.removesuffix('.T')}）": (ticker,)
+        for ticker, company in ticker_names.items()
+    }
+    screening_universe = dict(ticker_names)
+else:
+    tse33_tickers = tuple(
+        sorted(
+            {
+                ticker
+                for tickers in TSE33_SECTOR_TICKERS.values()
+                for ticker in tickers
+            }
+        )
+    )
+    with st.spinner("東証33業種の代表銘柄名を取得しています…"):
+        ticker_names, ticker_name_errors = load_ticker_names(tse33_tickers)
+    if ticker_name_errors:
+        failed_tickers = sorted(ticker_name_errors)
+        error_details = " / ".join(
+            f"{ticker}: {ticker_name_errors[ticker]}" for ticker in failed_tickers[:2]
+        )
+        st.warning(
+            f"{len(failed_tickers)}銘柄の正式名称を取得できませんでした。"
+            "該当銘柄はコードを表示します: "
+            + "、".join(failed_tickers[:5])
+            + ("、…" if len(failed_tickers) > 5 else "")
+            + f"（取得エラー: {error_details}）"
+        )
+    analysis_baskets = dict(TSE33_SECTOR_TICKERS)
+    screening_universe = {
+        ticker: get_ticker_name(ticker, ticker_names.get(ticker)) or "銘柄名未取得"
+        for ticker in tse33_tickers
+    }
+
+
+@st.cache_data(ttl=900, show_spinner=False)
+def load_analysis(ticker: str) -> pd.DataFrame:
+    indicators = calculate_indicators(
+        fetch_stock_data(ticker, period=BACKTEST_PERIOD)
+    )
+    return calculate_fear_greed_index(indicators)
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def load_trends(keyword: str) -> dict:
+    return get_google_trends_sentiment(keyword)
+
+
+@st.cache_data(ttl=3600, max_entries=2, show_spinner=False)
+def load_universe_prices(
+    baskets: tuple[tuple[str, tuple[str, ...]], ...],
+) -> pd.DataFrame:
+    return fetch_basket_close_prices(dict(baskets))
+
+
+def render_macro_postprime_export(
+    mode_name: str,
+    mode_key: str,
+    export_figures: tuple[tuple[str, go.Figure], ...] | None,
+    export_comments: dict[str, str],
+    ranking_period: int | None,
+    filtered_matrix: pd.DataFrame | None,
+    highlighted_sectors: set[str],
+    matrix_figure: go.Figure | None,
+) -> None:
+    st.header("PostPrime投稿用 (第0層) 一括データ出力＆画像書き出し")
+    st.caption(
+        "第0層のコメントをコピー用にまとめ、画像(A)は3チャートを縦結合、"
+        "画像(B)は多期間比較マトリックス単体で出力します。"
+    )
+    postprime_export_text = build_postprime_export_text(
+        mode_name, export_comments
+    )
+    st.code(postprime_export_text, language=None)
+
+    export_signature = hashlib.sha256(
+        json.dumps(
+            {
+                "mode": mode_key,
+                "comments": export_comments,
+                "figures": (
+                    [figure.to_json() for _, figure in export_figures]
+                    if export_figures
+                    else []
+                ),
+                "ranking_period": ranking_period,
+                "matrix_targets": (
+                    list(filtered_matrix.index)
+                    if filtered_matrix is not None
+                    else []
+                ),
+                "rrg_highlights": sorted(highlighted_sectors),
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        ).encode("utf-8")
+    ).hexdigest()[:16]
+    composite_image_key = f"postprime-image-a-{mode_key}"
+    matrix_image_key = f"postprime-image-b-{mode_key}"
+    composite_signature_key = f"{composite_image_key}-signature"
+    matrix_signature_key = f"{matrix_image_key}-signature"
+
+    if export_figures is None or matrix_figure is None:
+        st.info("分析データがないため、画像出力は利用できません。")
+        return
+
+    image_columns = st.columns(2)
+    with image_columns[0]:
+        if st.button(
+            "画像出力(A) ｜ Gemini解析用・統合画像を生成",
+            key=f"generate-{composite_image_key}",
+            width="stretch",
+        ):
+            try:
+                st.session_state[composite_image_key] = compose_plotly_png(
+                    export_figures
+                )
+                st.session_state[composite_signature_key] = export_signature
+            except (ImportError, OSError, RuntimeError, ValueError) as exc:
+                st.session_state.pop(composite_image_key, None)
+                st.session_state.pop(composite_signature_key, None)
+                st.error(f"統合画像を生成できませんでした: {exc}")
+        if st.session_state.get(composite_signature_key) == export_signature:
+            st.download_button(
+                "画像出力(A)をダウンロード",
+                data=st.session_state[composite_image_key],
+                file_name=f"{mode_key}-postprime-dashboard.png",
+                mime="image/png",
+                key=f"download-{composite_image_key}",
+                width="stretch",
+            )
+
+    with image_columns[1]:
+        if st.button(
+            "画像出力(B) ｜ PostPrime添付用・マトリックスを生成",
+            key=f"generate-{matrix_image_key}",
+            width="stretch",
+        ):
+            try:
+                st.session_state[matrix_image_key] = render_plotly_png(
+                    matrix_figure
+                )
+                st.session_state[matrix_signature_key] = export_signature
+            except (ImportError, OSError, RuntimeError, ValueError) as exc:
+                st.session_state.pop(matrix_image_key, None)
+                st.session_state.pop(matrix_signature_key, None)
+                st.error(f"マトリックス画像を生成できませんでした: {exc}")
+        if st.session_state.get(matrix_signature_key) == export_signature:
+            st.download_button(
+                "画像出力(B)をダウンロード",
+                data=st.session_state[matrix_image_key],
+                file_name=f"{mode_key}-postprime-matrix.png",
+                mime="image/png",
+                key=f"download-{matrix_image_key}",
+                width="stretch",
+            )
+
+
+export_figures: tuple[tuple[str, go.Figure], ...] | None = None
+export_comments: dict[str, str] = {}
+
+st.header(f"第0層｜{mode_name} 資金循環")
+if is_portfolio_mode:
+    st.caption(
+        "watchlist.jsonの各銘柄を個別系列としてTOPIX ETF（1306.T）と比較します。"
+        "銘柄名とコードはRRG・ランキング・マトリックスの対象ラベルに使用します。"
+    )
+else:
+    st.caption(
+        "東証33業種ごとの代表銘柄を等ウェイトで集計した代理系列を、TOPIX ETF（1306.T）と比較します。"
+        "個別株の調整後終値から合成するため、公式業種指数とは異なります。"
+    )
+if st.button(
+    f"{mode_name}データを更新",
+    key=f"refresh-universe-data-{mode_key}",
+):
+    load_universe_prices.clear()
+
+try:
+    if not analysis_baskets:
+        raise ValueError("ウォッチリストに分析対象銘柄がありません。")
+    with st.spinner(f"{mode_name}の株価データを取得しています…"):
+        universe_prices = load_universe_prices(
+            tuple(
+                (name, tuple(tickers))
+                for name, tickers in analysis_baskets.items()
+            )
+        )
+    sector_metrics = calculate_sector_metrics(
+        universe_prices,
+        constituents=analysis_baskets,
+        ticker_names=ticker_names,
+    )
+except (OSError, RuntimeError, ValueError) as exc:
+    st.error(f"{mode_name}の分析データを準備できませんでした: {exc}")
+else:
+    missing_targets = sorted(
+        set(analysis_baskets) - set(sector_metrics["Sector"])
+    )
+    if missing_targets:
+        st.warning(
+            "十分な日次データを取得できなかったため、次の対象を除外しました: "
+            + "、".join(missing_targets)
+        )
+
+    st.subheader(f"{mode_name} RRG｜市場に対する相対強度")
+    st.info(
+        "**RRGの指標とグラフの見方**\n\n"
+        "- **横軸 RS-Ratio:** TOPIX対比の相対強度を100基準に正規化した値です。"
+        "100以上は相対強度が基準より強い状態を示します。\n"
+        "- **縦軸 RS-Momentum:** 相対強度の勢いを100基準で示します。"
+        "100以上は勢いが基準より強く、相対強度の加速がプラスの状態です。\n"
+        "- **象限の循環:** 停滞（左下）→ 改善（左上）→ 先導（右上）→ "
+        "減速（右下）→ 停滞の順に、時計回りに移る傾向があります。\n"
+        "- **改善（左上）:** 相対強度はまだ100未満ですが勢いが上向いている領域で、"
+        "相対強度上昇の初動候補として注目されます。"
+        "軌跡と矢印は直近4営業日の移動方向を示します。"
+    )
+    rrg_chart_key = f"universe-rrg-chart-{mode_key}"
+    rrg_tail_sectors = st.multiselect(
+        "常時テールを表示する対象",
+        options=sorted(sector_metrics["Sector"].unique()),
+        default=[],
+        help="指定した対象の過去4営業日の軌跡を常時表示します。複数選択できます。",
+        key=f"rrg-tail-targets-{mode_key}",
+    )
+    selected_points_state = st.session_state.get(rrg_chart_key)
+    selected_sectors = get_rrg_selected_sectors(selected_points_state)
+    highlighted_sectors = set(rrg_tail_sectors) | selected_sectors
+    st.caption("最新のドットをクリックしても、その対象のテールを表示できます。")
+
+    rrg_figure = build_rrg_figure(sector_metrics, highlighted_sectors)
+    st.plotly_chart(
+        rrg_figure,
+        width="stretch",
+        alt=f"{mode_name}の市場に対する相対強度とモメンタム",
+        config={
+            "displayModeBar": True,
+            "toImageButtonOptions": {
+                "format": "png",
+                "filename": f"{mode_key}-rrg",
+                "scale": 2,
+            },
+        },
+        key=rrg_chart_key,
+        on_select="rerun",
+        selection_mode="points",
+    )
+    if selected_sectors:
+        st.caption(
+            "クリック選択中: "
+            + "、".join(sorted(selected_sectors & set(sector_metrics["Sector"])))
+        )
+    rrg_comment = get_rrg_comment(sector_metrics)
+    st.info(rrg_comment)
+
+    st.subheader(f"{mode_name} モメンタム TOP5 / ワースト5")
+    ranking_period_label = st.segmented_control(
+        "ランキング期間",
+        options=list(RANKING_PERIODS),
+        default="20営業日（1ヶ月）",
+        key=f"universe-ranking-period-{mode_key}",
+    )
+    if ranking_period_label is None:
+        ranking_period_label = "20営業日（1ヶ月）"
+    ranking_period = RANKING_PERIODS[ranking_period_label]
+    st.caption(
+        "赤は選択期間の上位5対象、青は下位5対象です。"
+        "灰色の破線は0%、紫の点線は同期間のTOPIXリターンです。"
+    )
+    ranking_figure = build_ranking_figure(sector_metrics, ranking_period)
+    st.plotly_chart(
+        ranking_figure,
+        width="stretch",
+        alt=(
+            f"{mode_name}の対象による{ranking_period}営業日"
+            "リターン上位5対象と下位5対象"
+        ),
+        config={
+            "displayModeBar": True,
+            "toImageButtonOptions": {
+                "format": "png",
+                "filename": f"{mode_key}-momentum-ranking",
+                "scale": 2,
+            },
+        },
+        key=f"universe-ranking-chart-{mode_key}-{ranking_period}",
+    )
+    ranking_comment = get_ranking_comment(sector_metrics, ranking_period)
+    st.info(ranking_comment)
+
+    st.subheader(f"{mode_name} 多期間比較マトリックス")
+    st.caption(
+        "色の濃さはリターンの大きさを示します（緑=プラス、青=マイナス）。"
+        f"「加速初動」は直近5日が前週より{MATRIX_ACCELERATION_THRESHOLD:.1f}"
+        "ポイントを超えて改善した場合です。"
+    )
+    matrix_data = build_matrix_dataframe(sector_metrics)
+    selected_signals = st.multiselect(
+        "初動判定で絞り込む",
+        options=[
+            signal
+            for signal in MATRIX_SIGNAL_LABELS
+            if signal in set(matrix_data["初動判定"])
+        ],
+        default=[],
+        help="未選択の場合は全パターンを表示します。",
+        key=f"matrix-signal-filter-{mode_key}",
+    )
+    filtered_matrix = (
+        matrix_data.loc[matrix_data["初動判定"].isin(selected_signals)]
+        if selected_signals
+        else matrix_data
+    )
+    matrix_figure = build_matrix_figure(
+        sector_metrics,
+        sectors=list(filtered_matrix.index),
+    )
+    st.dataframe(
+        style_matrix_dataframe(filtered_matrix),
+        width="stretch",
+        height=min(900, max(350, 42 + len(filtered_matrix) * 35)),
+        column_config={
+            "直近5日リターン": st.column_config.NumberColumn(format="%.2f%%"),
+            "前週5日リターン": st.column_config.NumberColumn(format="%.2f%%"),
+            "前月リターン": st.column_config.NumberColumn(format="%.2f%%"),
+        },
+        alt=f"{mode_name}のリターン比較とパターン別初動判定",
+    )
+    with st.expander("マトリックスをPNG画像で表示・保存"):
+        st.plotly_chart(
+            matrix_figure,
+            width="stretch",
+            alt=f"絞り込み後の{mode_name}リターン比較マトリックス",
+            config={
+                "displayModeBar": True,
+                "toImageButtonOptions": {
+                    "format": "png",
+                    "filename": f"{mode_key}-comparison-matrix",
+                    "scale": 2,
+                },
+            },
+            key=f"universe-matrix-chart-{mode_key}",
+        )
+    matrix_comment = get_matrix_comment(sector_metrics)
+    st.info(matrix_comment)
+    export_figures = (
+        ("A. RRG", rrg_figure),
+        ("B. Momentum ranking", ranking_figure),
+        ("C. Multi-period matrix", matrix_figure),
+    )
+    export_comments = {
+        "RRG自動コメント": rrg_comment,
+        "モメンタム自動コメント": ranking_comment,
+        "多期間比較マトリックス自動コメント（初動銘柄含む）": matrix_comment,
+    }
+    render_macro_postprime_export(
+        mode_name=mode_name,
+        mode_key=mode_key,
+        export_figures=export_figures,
+        export_comments=export_comments,
+        ranking_period=ranking_period if export_figures else None,
+        filtered_matrix=filtered_matrix if export_figures else None,
+        highlighted_sectors=(
+            highlighted_sectors if export_figures else set()
+        ),
+        matrix_figure=matrix_figure if export_figures else None,
+    )
+
+st.subheader("ウォッチリスト管理")
+
+with st.expander("銘柄の追加・編集・削除", expanded=False):
+    st.caption(
+        "表のセルを編集し、行を追加・削除してから保存してください。"
+        "銘柄コードは4文字（例: 7203）または .T 付きで入力できます。"
+    )
+    watchlist_frame = pd.DataFrame(
+        list(active_watchlist.items()),
+        columns=["銘柄コード", "銘柄名"],
+    ).astype({"銘柄コード": "string", "銘柄名": "string"})
+    revision = hashlib.sha256(
+        json.dumps(active_watchlist, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    ).hexdigest()[:12]
+    with st.form("watchlist_form"):
+        edited_watchlist = st.data_editor(
+            watchlist_frame,
+            key=f"watchlist_editor_{revision}",
+            num_rows="dynamic",
+            hide_index=True,
+            width="stretch",
+            column_config={
+                "銘柄コード": st.column_config.TextColumn(
+                    "銘柄コード", help="例: 7203 または 7203.T", required=True
+                ),
+                "銘柄名": st.column_config.TextColumn("銘柄名", required=True),
+            },
+            alt="編集可能な銘柄ウォッチリスト",
+        )
+        save_changes = st.form_submit_button("変更を保存", type="primary")
+    if save_changes:
+        try:
+            active_watchlist = save_watchlist(
+                {
+                    row["銘柄コード"]: row["銘柄名"]
+                    for _, row in edited_watchlist.iterrows()
+                }
+            )
+        except (OSError, ValueError) as exc:
+            st.error(f"変更を保存できません: {exc}")
+        else:
+            st.cache_data.clear()
+            st.session_state.pop("chart_png_data", None)
+            st.session_state.pop("chart_png_ticker", None)
+            st.success("ウォッチリストを保存しました。")
+            st.rerun()
+
+st.subheader(f"第1段階｜{mode_name} 高速スクリーニング")
+if st.button(f"{mode_name}のスクリーニングデータを更新"):
+    st.cache_data.clear()
+    st.session_state.pop("chart_png_data", None)
+    st.session_state.pop("chart_png_ticker", None)
+
+rows: list[dict] = []
+data_by_ticker: dict[str, pd.DataFrame] = {}
+errors: list[str] = []
+with st.spinner(f"{mode_name}の銘柄を分析しています…"):
+    for ticker, company in screening_universe.items():
+        try:
+            indicators = load_analysis(ticker)
+            data_by_ticker[ticker] = indicators
+            latest = indicators.iloc[-1]
+            score = score_signal(indicators)
+            adx_value = score["adx"]
+            if adx_value is None:
+                adx_display = "判定不可 (ADX取得不可)"
+            else:
+                adx_level = "強" if adx_value >= 25 else "中" if adx_value >= 20 else "弱"
+                adx_display = f"{adx_level} ({adx_value:.1f})"
+
+            atr_value = score["atr_percent"]
+            if atr_value is None:
+                atr_display = "判定不可 (ATR%取得不可)"
+            else:
+                atr_level = (
+                    "大"
+                    if atr_value >= 3.0
+                    else "中"
+                    if atr_value >= 1.5
+                    else "小"
+                )
+                atr_display = f"{atr_level} ({atr_value:.2f}%)"
+
+            rows.append(
+                {
+                    "銘柄": f"{ticker}: {company}",
+                    "終値": latest["Close"],
+                    "買い確度": score["buy_confidence"],
+                    "売り確度": score["sell_confidence"],
+                    "5年レンジ位置": score["range_position"],
+                    "値位置": score["range_status"],
+                    "相場判定": "レンジ" if score["is_ranging"] else "通常",
+                    "トレンドの強さ": adx_display,
+                    "値動きの激しさ": atr_display,
+                    "恐怖指数": (
+                        f"{latest['Fear_Greed_Label']} "
+                        f"({int(np.floor(latest['Fear_Greed_Score'] + 0.5))})"
+                        if pd.notna(latest["Fear_Greed_Score"])
+                        else "判定不可"
+                    ),
+                }
+            )
+        except Exception as exc:
+            errors.append(f"{ticker} ({company}): {exc}")
+
+for error in errors:
+    st.warning(f"分析に失敗しました — {error}")
+
+if rows:
+    summary = pd.DataFrame(rows).set_index("銘柄")
+    st.dataframe(
+        summary,
+        width="stretch",
+        alt=f"{mode_name}銘柄の売買確度、テクニカル指標、恐怖指数",
+        column_config={
+            "終値": st.column_config.NumberColumn(format="%.2f"),
+            "買い確度": st.column_config.NumberColumn(format="%d%%"),
+            "売り確度": st.column_config.NumberColumn(format="%d%%"),
+            "5年レンジ位置": st.column_config.NumberColumn(format="%.1f%%"),
+            "相場判定": st.column_config.TextColumn(
+                help=(
+                    "相場環境の判定状態。"
+                    "・通常：上記以外の相場状態"
+                    "・レンジ：ADX < 20 かつ ATR% < 1.5%"
+                    "※レンジ判定では売買確度は自動で0%になります"
+                )
+            ),
+            "トレンドの強さ": st.column_config.TextColumn(
+                help=(
+                    "ADXによるトレンドの強さ（方向性は示しません、日足14日基準）。"
+                    "強：ADX 25以上、中：ADX 20以上25未満、弱：ADX 20未満。"
+                    "括弧内は実際のADX値です。"
+                ),
+            ),
+            "値動きの激しさ": st.column_config.TextColumn(
+                help=(
+                    "ATR%による値動きの大きさ（終値比、日足14日基準）。"
+                    "大（激しい）：ATR% 3.0%以上、中（標準）：ATR% 1.5%以上3.0%未満、"
+                    "小（穏やか）：ATR% 1.5%未満。括弧内は実際のATR%値です。"
+                ),
+            ),
+            "恐怖指数": st.column_config.TextColumn(
+                help=(
+                    "25日移動平均乖離率（最大±25点）とRSI（最大±15点）を"
+                    "基準点50に加算し、出来高が20日平均の2倍以上なら補正値を"
+                    "1.3倍にします。スコアは0〜100に制限します。"
+                    "判定：0〜20 極度の恐怖、21〜40 恐怖、41〜60 中立、"
+                    "61〜80 貪欲、81〜100 極度の熱狂。"
+                ),
+            ),
+        },
+    )
+
+    screening_export_text = (
+        f"以下は{mode_name}の高速スクリーニング結果です。"
+        "買い確度・売り確度・トレンド・値動き・恐怖指数を比較し、"
+        "リスクと数値根拠を明示したうえで、詳細分析に進める候補銘柄を"
+        "最大3銘柄選んでください。売買を断定せず、該当候補がない場合は"
+        "その旨を説明してください。\n\n"
+        "【スクリーニング結果】\n"
+        f"{summary.to_string()}"
+    )
+    st.markdown("**Geminiへのおすすめ銘柄ピックアップ依頼**")
+    st.code(screening_export_text, language=None)
+
+    selected_ticker_key = f"selected_ticker_{mode_key}"
+    if st.session_state.get(selected_ticker_key) not in data_by_ticker:
+        st.session_state[selected_ticker_key] = next(iter(data_by_ticker))
+    selected = st.selectbox(
+        "詳細分析する銘柄",
+        options=list(data_by_ticker),
+        format_func=lambda ticker: f"{ticker}: {screening_universe[ticker]}",
+        key=selected_ticker_key,
+    )
+    indicators = data_by_ticker[selected]
+    company = screening_universe[selected]
+
+    st.subheader(f"第2段階｜{mode_name} 詳細分析・バックテスト")
+    trend_data = None
+    try:
+        trend_data = load_trends(company)
+    except Exception as exc:
+        st.warning(
+            "Googleトレンドを取得できませんでした。センチメント加点なしで分析します。"
+            f"詳細: {exc}"
+        )
+
+    sentiment_rising = trend_data["rising"] if trend_data else None
+    current_score = score_signal(indicators, sentiment_rising=sentiment_rising)
+    fear_greed_score = indicators["Fear_Greed_Score"]
+    latest_fear_greed = fear_greed_score.iloc[-1]
+    previous_fear_greed = (
+        fear_greed_score.iloc[-2] if len(fear_greed_score) > 1 else np.nan
+    )
+    latest_fear_greed_label = indicators["Fear_Greed_Label"].iloc[-1]
+    fear_greed_delta = (
+        int(np.floor(latest_fear_greed + 0.5))
+        - int(np.floor(previous_fear_greed + 0.5))
+        if pd.notna(latest_fear_greed) and pd.notna(previous_fear_greed)
+        else None
+    )
+    backtest = backtest_strategy(
+        indicators,
+        threshold=SIGNAL_THRESHOLD,
+        initial_capital=BACKTEST_INITIAL_CAPITAL,
+    )
+    rank, win_rate, confidence_score = (
+        backtest["rank"],
+        backtest["win_rate"],
+        backtest["confidence_score"],
+    )
+
+    latest_reasons = list(
+        dict.fromkeys(current_score["buy_reasons"] + current_score["sell_reasons"])
+    )
+    if current_score["adx"] is not None:
+        latest_reasons.append(f"ADX {current_score['adx']:.1f}")
+    if current_score["atr_percent"] is not None:
+        latest_reasons.append(f"ATR {current_score['atr_percent']:.2f}%")
+    reasons_hash = hashlib.sha256(
+        json.dumps(latest_reasons, ensure_ascii=False).encode("utf-8")
+    ).hexdigest()[:12]
+    comment_cache_key = (
+        f"ai-comment-{selected}-{current_score['buy_confidence']}-"
+        f"{current_score['sell_confidence']}-{rank}-{win_rate:.4f}-"
+        f"{current_score['range_status']}-{current_score['is_ranging']}-"
+        f"{sentiment_rising}-{latest_fear_greed}-{latest_fear_greed_label}-"
+        f"{current_score['range_position']}-{reasons_hash}"
+    )
+    postprime_cache_key = comment_cache_key.replace("ai-comment-", "ai-postprime-", 1)
+    if st.button("AI解説・投稿文を再生成", key=f"refresh-{comment_cache_key}"):
+        st.session_state.pop(comment_cache_key, None)
+        st.session_state.pop(postprime_cache_key, None)
+    if comment_cache_key not in st.session_state:
+        with st.spinner("クオンツ解説を作成しています…"):
+            st.session_state[comment_cache_key] = generate_ai_comment(
+                ticker=selected,
+                company=company,
+                buy_confidence=current_score["buy_confidence"],
+                sell_confidence=current_score["sell_confidence"],
+                rank=rank,
+                win_rate=win_rate,
+                range_status=current_score["range_status"],
+                is_ranging=current_score["is_ranging"],
+                technical_signals=latest_reasons,
+                range_position=current_score["range_position"],
+                adx=current_score["adx"],
+                atr_percent=current_score["atr_percent"],
+                fear_greed_score=(
+                    float(latest_fear_greed)
+                    if pd.notna(latest_fear_greed)
+                    else None
+                ),
+                fear_greed_label=latest_fear_greed_label,
+                gemini_api_key=GEMINI_API_KEY,
+            )
+    st.subheader("🤖 ギャルたんクオンツの直感解説")
+    st.info(st.session_state[comment_cache_key], icon="🤖", width="stretch")
+
+    metric_columns = st.columns(6)
+    metric_columns[0].metric("買い確度", f"{current_score['buy_confidence']}%")
+    metric_columns[1].metric("売り確度", f"{current_score['sell_confidence']}%")
+    metric_columns[2].metric("5年レンジ位置", current_score["range_status"])
+    fear_greed_value = (
+        f"{latest_fear_greed_label} "
+        f"({int(np.floor(latest_fear_greed + 0.5))})"
+        if pd.notna(latest_fear_greed)
+        else "判定不可"
+    )
+    metric_columns[3].metric(
+        "恐怖指数",
+        fear_greed_value,
+        f"{fear_greed_delta:+d}pt" if fear_greed_delta is not None else None,
+        delta_color="off",
+        help="括弧内は0〜100のスコアです。デルタは前営業日からのスコア差です。",
+    )
+    metric_columns[4].metric("AI信頼度", f"ランク{rank}", f"{confidence_score}%")
+    metric_columns[5].metric("バックテスト勝率", f"{win_rate:.1f}%")
+
+    signal_data = add_signal_flags(indicators, threshold=SIGNAL_THRESHOLD)
+    figure = make_subplots(
+        rows=6,
+        cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.045,
+        row_heights=[0.38, 0.12, 0.16, 0.11, 0.1, 0.13],
+        subplot_titles=(
+            "株価・移動平均・売買シグナル",
+            "出来高",
+            "MACD",
+            "RSI",
+            "ADX",
+            "個別株 Fear & Greed Index",
+        ),
+    )
+    figure.add_trace(
+        go.Candlestick(
+            x=indicators.index,
+            open=indicators["Open"],
+            high=indicators["High"],
+            low=indicators["Low"],
+            close=indicators["Close"],
+            name="株価",
+        ),
+        row=1,
+        col=1,
+    )
+    for column, label, color in (
+        ("SMA_25", "25日線", "#f39c12"),
+        ("SMA_75", "75日線", "#3498db"),
+        ("SMA_200", "200日線", "#9b59b6"),
+    ):
+        figure.add_trace(
+            go.Scatter(
+                x=indicators.index,
+                y=indicators[column],
+                name=label,
+                line={"color": color},
+            ),
+            row=1,
+            col=1,
+        )
+    for action, flag, price_col, reason_col, symbol, color in (
+        ("買い", "Buy_Signal", "Low", "Buy_Signal_Reason", "triangle-up", "#16a085"),
+        ("売り", "Sell_Signal", "High", "Sell_Signal_Reason", "triangle-down", "#e74c3c"),
+    ):
+        points = signal_data.loc[signal_data[flag]]
+        if not points.empty:
+            figure.add_trace(
+                go.Scatter(
+                    x=points.index,
+                    y=points[price_col],
+                    mode="markers",
+                    name=f"{action}シグナル",
+                    marker={"symbol": symbol, "size": 12, "color": color},
+                    text=points[reason_col],
+                    hovertemplate="%{x}<br>" + action + "シグナル<br>%{text}<extra></extra>",
+                ),
+                row=1,
+                col=1,
+            )
+
+    figure.add_trace(
+        go.Bar(
+            x=indicators.index,
+            y=indicators["Volume"],
+            name="出来高",
+            marker_color="#7f8c8d",
+        ),
+        row=2,
+        col=1,
+    )
+    figure.add_trace(
+        go.Bar(
+            x=indicators.index,
+            y=indicators["MACD_Hist"],
+            name="MACDヒストグラム",
+            marker_color="#95a5a6",
+        ),
+        row=3,
+        col=1,
+    )
+    figure.add_trace(
+        go.Scatter(x=indicators.index, y=indicators["MACD"], name="MACD"),
+        row=3,
+        col=1,
+    )
+    figure.add_trace(
+        go.Scatter(
+            x=indicators.index,
+            y=indicators["MACD_Signal"],
+            name="MACDシグナル",
+        ),
+        row=3,
+        col=1,
+    )
+    figure.add_hline(y=70, line_dash="dot", line_color="red", row=4, col=1)
+    figure.add_hline(y=30, line_dash="dot", line_color="green", row=4, col=1)
+    figure.add_trace(
+        go.Scatter(x=indicators.index, y=indicators["RSI"], name="RSI"),
+        row=4,
+        col=1,
+    )
+    figure.add_trace(
+        go.Scatter(x=indicators.index, y=indicators["ADX"], name="ADX"),
+        row=5,
+        col=1,
+    )
+    figure.add_hline(y=20, line_dash="dot", line_color="#e74c3c", row=6, col=1)
+    figure.add_hline(y=80, line_dash="dot", line_color="#2ecc71", row=6, col=1)
+    figure.add_trace(
+        go.Scatter(
+            x=indicators.index,
+            y=fear_greed_score,
+            name="Fear & Greed スコア",
+            line={"color": "#8e44ad"},
+        ),
+        row=6,
+        col=1,
+    )
+    figure.update_yaxes(title_text="出来高", row=2, col=1)
+    figure.update_yaxes(range=[0, 100], title_text="スコア", row=6, col=1)
+
+    figure.update_layout(
+        title={
+            "text": build_chart_title(
+                ticker=selected,
+                company=company,
+                buy_confidence=current_score["buy_confidence"],
+                sell_confidence=current_score["sell_confidence"],
+                range_status=current_score["range_status"],
+                fear_greed_label=(
+                    latest_fear_greed_label
+                    if isinstance(latest_fear_greed_label, str)
+                    else "判定不可"
+                ),
+                fear_greed_score=(
+                    float(latest_fear_greed)
+                    if pd.notna(latest_fear_greed)
+                    else None
+                ),
+                rank=rank,
+                win_rate=win_rate,
+            ),
+            "x": 0.5,
+            "xanchor": "center",
+        },
+        font={"family": CHART_FONT_FAMILY},
+        height=1300,
+        xaxis_rangeslider_visible=False,
+        hovermode="x unified",
+        legend={"orientation": "h", "y": 1.02},
+        margin={"t": 130},
+    )
+    figure.update_xaxes(range=[indicators.index.min(), indicators.index.max()])
+    st.plotly_chart(
+        figure,
+        width="stretch",
+        alt=(
+            f"{selected} {company} の株価・出来高・テクニカル指標と"
+            "Fear & Greed スコアの推移。"
+            f"買い確度{current_score['buy_confidence']}%、"
+            f"売り確度{current_score['sell_confidence']}%"
+        ),
+        theme="streamlit",
+        key=f"detail-chart-{selected}",
+    )
+
+    st.markdown("**現在の判定理由**")
+    st.write("買い:", " / ".join(current_score["buy_reasons"]) or "条件なし")
+    st.write("売り:", " / ".join(current_score["sell_reasons"]) or "条件なし")
+    if current_score["is_ranging"]:
+        st.warning("ADX・ATRが低いレンジ相場と判定され、現在のシグナルは無効化されています。")
+    if trend_data is None:
+        st.caption("Googleトレンドのセンチメント加点はありません。")
+
+    with st.container(border=True):
+        st.subheader("簡易バックテスト")
+        st.caption(
+            f"{BACKTEST_PERIOD}の日次データ、シグナル閾値{SIGNAL_THRESHOLD}%、"
+            f"初期資金{BACKTEST_INITIAL_CAPITAL:,.0f}円。"
+            "終値で確定したシグナルを翌営業日の始値で約定する手数料・税金なしの簡易検証です。"
+            "AI信頼度は勝率・PF・試行回数を使ったルールベース指標で、学習モデルではありません。"
+        )
+        bt_columns = st.columns(5)
+        bt_columns[0].metric("信頼度ランク", f"ランク{rank}")
+        bt_columns[1].metric("信頼度スコア", f"{confidence_score}%")
+        bt_columns[2].metric("勝率 / 試行回数", f"{win_rate:.1f}%", f"{backtest['trade_count']}回")
+        pf = backtest["profit_factor"]
+        bt_columns[3].metric(
+            "プロフィットファクター",
+            "∞" if np.isinf(pf) else f"{pf:.2f}",
+        )
+        bt_columns[4].metric("最大ドローダウン", f"{backtest['max_drawdown_percent']:.1f}%")
+
+        equity_figure = go.Figure(
+            go.Scatter(
+                x=backtest["equity_curve"].index,
+                y=backtest["equity_curve"],
+                mode="lines",
+                name="資産推移",
+                line={"color": "#3498db"},
+            )
+        )
+        equity_figure.update_layout(
+            title="バックテスト資産推移",
+            xaxis_title="日付",
+            yaxis_title="資産（円）",
+            height=350,
+            margin={"t": 55},
+        )
+        st.plotly_chart(
+            equity_figure,
+            width="stretch",
+            alt="バックテスト期間の資産推移",
+            key=f"equity-chart-{selected}",
+        )
+        if not backtest["trades"].empty:
+            st.dataframe(
+                backtest["trades"],
+                width="stretch",
+                hide_index=True,
+                alt="バックテスト各トレードの結果",
+                column_config={
+                    "entry_date": "エントリー日",
+                    "exit_date": "決済日",
+                    "side": "売買",
+                    "entry_price": st.column_config.NumberColumn("建値", format="%.2f"),
+                    "exit_price": st.column_config.NumberColumn("決済値", format="%.2f"),
+                    "return_percent": st.column_config.NumberColumn("損益率", format="%.2f%%"),
+                },
+            )
+        else:
+            st.info("指定した期間・条件ではバックテスト対象のトレードがありません。")
+
+    if postprime_cache_key not in st.session_state:
+        with st.spinner("PostPrime投稿文を作成しています…"):
+            st.session_state[postprime_cache_key] = generate_postprime_text(
+                ticker=selected,
+                company=company,
+                buy_confidence=current_score["buy_confidence"],
+                sell_confidence=current_score["sell_confidence"],
+                rank=rank,
+                win_rate=win_rate,
+                range_status=current_score["range_status"],
+                is_ranging=current_score["is_ranging"],
+                technical_signals=latest_reasons,
+                range_position=current_score["range_position"],
+                adx=current_score["adx"],
+                atr_percent=current_score["atr_percent"],
+                fear_greed_score=(
+                    float(latest_fear_greed)
+                    if pd.notna(latest_fear_greed)
+                    else None
+                ),
+                fear_greed_label=latest_fear_greed_label,
+                buy_reasons=current_score["buy_reasons"],
+                sell_reasons=current_score["sell_reasons"],
+                gemini_api_key=GEMINI_API_KEY,
+            )
+    st.header("PostPrime投稿用 (第1・2段階) 一括データ出力＆画像書き出し")
+    st.caption("選択銘柄の個別分析とクオンツ解説をまとめてコピーできます。")
+    detail_export_text = (
+        f"ギャルたん！{selected} ({company})の最新クオンツ分析データを"
+        "共有するね！\n"
+        "以下の詳細データとクオンツ直感解説を参考に、PostPrime投稿用の"
+        "記事を作成してください。数値を誇張せず、リスクと分析上の注意点も"
+        "含めてください。\n\n"
+        "【個別銘柄の詳細データ】\n"
+        f"銘柄コード: {selected}\n"
+        f"銘柄名: {company}\n"
+        f"買い確度: {current_score['buy_confidence']}%\n"
+        f"売り確度: {current_score['sell_confidence']}%\n"
+        f"値位置: {current_score['range_status']}\n"
+        f"恐怖指数: {fear_greed_value}\n"
+        f"AI信頼度: ランク{rank}（{confidence_score}%）\n"
+        f"バックテスト勝率: {win_rate:.1f}% "
+        f"（{backtest['trade_count']}回）\n"
+        f"現在の判定理由（買い）: "
+        f"{' / '.join(current_score['buy_reasons']) or '条件なし'}\n"
+        f"現在の判定理由（売り）: "
+        f"{' / '.join(current_score['sell_reasons']) or '条件なし'}\n\n"
+        "【ギャルたんクオンツの直感解説】\n"
+        f"{st.session_state[comment_cache_key]}\n\n"
+        "【PostPrime記事作成案】\n"
+        f"{st.session_state[postprime_cache_key]}"
+    )
+    st.code(detail_export_text, language=None)
+
+    if st.button(
+        "画像出力(C) ｜ Gemini解析用兼PostPrime添付用・統合画像を生成",
+        key=f"generate-png-{selected}",
+    ):
+        try:
+            st.session_state["chart_png_data"] = render_plotly_png(figure)
+            st.session_state["chart_png_ticker"] = selected
+        except (ValueError, ImportError, RuntimeError) as exc:
+            st.session_state.pop("chart_png_data", None)
+            st.session_state.pop("chart_png_ticker", None)
+            st.error(f"PNG出力に失敗しました。Kaleidoの状態を確認してください: {exc}")
+    if (
+        st.session_state.get("chart_png_ticker") == selected
+        and st.session_state.get("chart_png_data")
+    ):
+        st.download_button(
+            "画像出力(C)をダウンロード",
+            data=st.session_state["chart_png_data"],
+            file_name=f"{selected}_analysis.png",
+            mime="image/png",
+            key=f"download-png-{selected}",
+        )
+else:
+    st.info("分析できる銘柄がありません。銘柄コードと株価データ接続を確認してください。")
