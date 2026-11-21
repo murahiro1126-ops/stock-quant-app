@@ -11,12 +11,17 @@ from postprime_export import (
     PNG_EXPORT_SCALE,
     POSTPRIME_CARD_HEIGHT,
     POSTPRIME_CARD_WIDTH,
+    POSTPRIME_STOCK_CARD_HEIGHT,
+    POSTPRIME_STOCK_CARD_WIDTH,
     build_postprime_card_figure,
     build_postprime_export_text,
+    build_postprime_stock_card_figure,
     compose_plotly_png,
+    extract_latest_stock_card_values,
     prepare_figure_for_png,
     render_plotly_png,
     render_postprime_card_png,
+    render_postprime_stock_card_png,
     select_postprime_card_rows,
 )
 
@@ -292,6 +297,85 @@ def test_postprime_card_uses_ascii_hyphens_for_empty_values_and_signals():
     assert values[3] == ["-", "データ不足"]
     assert all(value.isascii() for column in values[1:3] for value in column)
     assert values[3][0].isascii()
+
+
+def test_extract_latest_stock_card_values_uses_latest_indicator_row():
+    indicators = pd.DataFrame(
+        {
+            "MACD": [-0.5, -1.25],
+            "RSI": [48.0, 62.5],
+            "ADX": [20.0, 31.0],
+            "Fear_Greed_Score": [55.0, 73.0],
+        },
+        index=pd.to_datetime(["2026-02-02", "2026-02-03"]),
+    )
+
+    values = extract_latest_stock_card_values(indicators)
+
+    assert values == {
+        "MACD": -1.25,
+        "RSI": 62.5,
+        "ADX": 31.0,
+        "Fear & Greed": 73.0,
+    }
+
+
+def test_postprime_stock_card_displays_latest_values_and_renders_16_by_9(
+    monkeypatch,
+):
+    indicators = pd.DataFrame(
+        {
+            "Close": [101.0, 105.0],
+            "Volume": [1000, 1500],
+            "SMA_25": [99.0, 100.0],
+            "SMA_75": [95.0, 96.0],
+            "SMA_200": [90.0, 91.0],
+            "MACD": [-0.5, -1.25],
+            "RSI": [48.0, 62.5],
+            "ADX": [20.0, 31.0],
+            "Fear_Greed_Score": [55.0, 73.0],
+        },
+        index=pd.to_datetime(["2026-02-02", "2026-02-03"]),
+    )
+    rendered = []
+
+    def fake_to_image(figure, **options):
+        rendered.append((figure, options))
+        return b"stock-card"
+
+    monkeypatch.setattr(go.Figure, "to_image", fake_to_image)
+
+    assert render_postprime_stock_card_png(
+        indicators, "1234.T", "テスト銘柄"
+    ) == b"stock-card"
+
+    figure, options = rendered[0]
+    assert options == {
+        "format": "png",
+        "width": POSTPRIME_STOCK_CARD_WIDTH,
+        "height": POSTPRIME_STOCK_CARD_HEIGHT,
+        "scale": 1,
+    }
+    assert figure.layout.width == POSTPRIME_STOCK_CARD_WIDTH
+    assert figure.layout.height == POSTPRIME_STOCK_CARD_HEIGHT
+    assert {"終値", "25日線", "75日線", "200日線", "出来高"}.issubset(
+        {trace.name for trace in figure.data}
+    )
+    gauges = {
+        trace.title.text: trace
+        for trace in figure.data
+        if trace.type == "indicator"
+    }
+    assert {name: gauge.value for name, gauge in gauges.items()} == {
+        "MACD": -1.25,
+        "RSI": 62.5,
+        "ADX": 31.0,
+        "Fear & Greed": 73.0,
+    }
+    assert gauges["MACD"].gauge.bar.color == "#E74C3C"
+    assert gauges["RSI"].gauge.bar.color == "#16A085"
+    assert gauges["ADX"].gauge.bar.color == "#16A085"
+    assert gauges["Fear & Greed"].gauge.bar.color == "#16A085"
 
 
 def test_compose_plotly_png_stacks_named_chart_images(monkeypatch):

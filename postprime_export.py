@@ -16,6 +16,8 @@ from sector_flow import build_matrix_dataframe
 PNG_EXPORT_SCALE = 2
 POSTPRIME_CARD_WIDTH = 1600
 POSTPRIME_CARD_HEIGHT = 900
+POSTPRIME_STOCK_CARD_WIDTH = 1600
+POSTPRIME_STOCK_CARD_HEIGHT = 900
 PNG_EMOJI_FONT_FAMILIES = (
     "Noto Color Emoji",
     "Segoe UI Emoji",
@@ -518,6 +520,359 @@ def render_postprime_card_png(metrics: pd.DataFrame, mode_name: str) -> bytes:
         format="png",
         width=POSTPRIME_CARD_WIDTH,
         height=POSTPRIME_CARD_HEIGHT,
+        scale=1,
+    )
+
+
+def extract_latest_stock_card_values(
+    indicators: pd.DataFrame,
+) -> dict[str, float | None]:
+    """Return the latest calculated MACD, RSI, ADX, and Fear & Greed values."""
+    columns = {
+        "MACD": "MACD",
+        "RSI": "RSI",
+        "ADX": "ADX",
+        "Fear & Greed": "Fear_Greed_Score",
+    }
+    if not isinstance(indicators, pd.DataFrame) or indicators.empty:
+        raise ValueError("テクニカル指標データが空です。")
+    missing = set(columns.values()).difference(indicators.columns)
+    if missing:
+        raise ValueError(
+            "カード表示用の指標が不足しています: " + ", ".join(sorted(missing))
+        )
+
+    latest = indicators.iloc[-1]
+    values: dict[str, float | None] = {}
+    for label, column in columns.items():
+        value = pd.to_numeric(pd.Series([latest[column]]), errors="coerce").iloc[0]
+        values[label] = (
+            float(value)
+            if pd.notna(value) and np.isfinite(float(value))
+            else None
+        )
+    return values
+
+
+def _stock_card_gauge_style(
+    name: str,
+    value: float | None,
+) -> dict[str, object]:
+    """Keep gauge thresholds and visual state separate from trace rendering."""
+    if name == "MACD":
+        radius = max(1.0, abs(value) * 1.5) if value is not None else 1.0
+        color = (
+            "#16A085"
+            if value is not None and value > 0
+            else "#E74C3C"
+            if value is not None and value < 0
+            else "#98A2B3"
+        )
+        state = (
+            "プラス圏"
+            if value is not None and value > 0
+            else "マイナス圏"
+            if value is not None and value < 0
+            else "ゼロ近辺"
+            if value is not None
+            else "取得不可"
+        )
+        value_range = [-radius, radius]
+        value_format = ".2f"
+        suffix = ""
+    elif name == "RSI":
+        color = (
+            "#E74C3C"
+            if value is not None and value >= 70
+            else "#3478C5"
+            if value is not None and value <= 30
+            else "#16A085"
+            if value is not None
+            else "#98A2B3"
+        )
+        state = (
+            "買われ過ぎ"
+            if value is not None and value >= 70
+            else "売られ過ぎ"
+            if value is not None and value <= 30
+            else "中立域"
+            if value is not None
+            else "取得不可"
+        )
+        value_range = [0, 100]
+        value_format = ".1f"
+        suffix = ""
+    elif name == "ADX":
+        color = (
+            "#16A085"
+            if value is not None and value >= 25
+            else "#F39C12"
+            if value is not None and value >= 20
+            else "#98A2B3"
+        )
+        state = (
+            "強いトレンド"
+            if value is not None and value >= 25
+            else "トレンド発生"
+            if value is not None and value >= 20
+            else "弱いトレンド"
+            if value is not None
+            else "取得不可"
+        )
+        value_range = [0, 100]
+        value_format = ".1f"
+        suffix = ""
+    else:
+        color = (
+            "#E74C3C"
+            if value is not None and value <= 25
+            else "#F39C12"
+            if value is not None and value <= 40
+            else "#98A2B3"
+            if value is not None and value <= 60
+            else "#16A085"
+            if value is not None
+            else "#98A2B3"
+        )
+        state = (
+            "恐怖"
+            if value is not None and value <= 40
+            else "中立"
+            if value is not None and value <= 60
+            else "貪欲"
+            if value is not None
+            else "取得不可"
+        )
+        value_range = [0, 100]
+        value_format = ".0f"
+        suffix = "/100"
+    return {
+        "range": value_range,
+        "color": color,
+        "state": state,
+        "valueformat": value_format,
+        "suffix": suffix,
+    }
+
+
+def build_postprime_stock_card_figure(
+    indicators: pd.DataFrame,
+    ticker: str,
+    company: str,
+) -> go.Figure:
+    """Build a 16:9 stock chart with today's four technical indicator gauges."""
+    chart_columns = {"Close", "Volume", "SMA_25", "SMA_75", "SMA_200"}
+    if not isinstance(indicators, pd.DataFrame) or indicators.empty:
+        raise ValueError("カード画像を描画する株価データがありません。")
+    missing_chart_columns = chart_columns.difference(indicators.columns)
+    if missing_chart_columns:
+        raise ValueError(
+            "カード画像用の株価列が不足しています: "
+            + ", ".join(sorted(missing_chart_columns))
+        )
+    latest_values = extract_latest_stock_card_values(indicators)
+    chart_data = indicators.tail(120)
+    date_value = pd.to_datetime(indicators.index[-1], errors="coerce")
+    date_label = (
+        date_value.strftime("%Y-%m-%d")
+        if pd.notna(date_value)
+        else str(indicators.index[-1])
+    )
+
+    figure = make_subplots(
+        rows=4,
+        cols=3,
+        specs=[
+            [
+                {"type": "xy", "rowspan": 3},
+                {"type": "domain", "rowspan": 2},
+                {"type": "domain", "rowspan": 2},
+            ],
+            [None, None, None],
+            [
+                None,
+                {"type": "domain", "rowspan": 2},
+                {"type": "domain", "rowspan": 2},
+            ],
+            [{"type": "xy"}, None, None],
+        ],
+        column_widths=[0.64, 0.18, 0.18],
+        row_heights=[0.25, 0.25, 0.25, 0.25],
+        horizontal_spacing=0.035,
+        vertical_spacing=0.025,
+    )
+    figure.add_trace(
+        go.Scatter(
+            x=chart_data.index,
+            y=chart_data["Close"],
+            mode="lines",
+            name="終値",
+            line={"color": "#17243A", "width": 2.5},
+        ),
+        row=1,
+        col=1,
+    )
+    for column, label, color in (
+        ("SMA_25", "25日線", "#E67E22"),
+        ("SMA_75", "75日線", "#2980B9"),
+        ("SMA_200", "200日線", "#8E44AD"),
+    ):
+        figure.add_trace(
+            go.Scatter(
+                x=chart_data.index,
+                y=chart_data[column],
+                mode="lines",
+                name=label,
+                line={"color": color, "width": 1.7},
+            ),
+            row=1,
+            col=1,
+        )
+    figure.add_trace(
+        go.Bar(
+            x=chart_data.index,
+            y=chart_data["Volume"],
+            name="出来高",
+            marker_color="#AAB6C4",
+        ),
+        row=4,
+        col=1,
+    )
+    figure.update_yaxes(
+        title_text="株価",
+        tickfont={"size": 11},
+        row=1,
+        col=1,
+    )
+    figure.update_yaxes(
+        title_text="出来高",
+        tickfont={"size": 10},
+        row=4,
+        col=1,
+    )
+    figure.update_xaxes(
+        showticklabels=False,
+        row=1,
+        col=1,
+    )
+    figure.update_xaxes(
+        tickfont={"size": 10},
+        row=4,
+        col=1,
+    )
+
+    gauge_positions = (
+        ("MACD", 1, 2),
+        ("RSI", 1, 3),
+        ("ADX", 3, 2),
+        ("Fear & Greed", 3, 3),
+    )
+    for name, row, column in gauge_positions:
+        value = latest_values[name]
+        style = _stock_card_gauge_style(name, value)
+        figure.add_trace(
+            go.Indicator(
+                mode="gauge+number",
+                value=value,
+                title={
+                    "text": name,
+                    "font": {
+                        "family": CHART_FONT_FAMILY,
+                        "size": 17,
+                        "color": "#17243A",
+                    },
+                },
+                number={
+                    "valueformat": str(style["valueformat"]),
+                    "suffix": str(style["suffix"]),
+                    "font": {
+                        "family": CHART_FONT_FAMILY,
+                        "size": 30,
+                        "color": "#17243A",
+                    },
+                },
+                gauge={
+                    "axis": {
+                        "range": style["range"],
+                        "tickwidth": 1,
+                        "tickcolor": "#98A2B3",
+                    },
+                    "bar": {
+                        "color": style["color"],
+                        "thickness": 0.28,
+                    },
+                    "bgcolor": "#E9EEF5",
+                    "borderwidth": 0,
+                },
+                meta={"status": style["state"]},
+            ),
+            row=row,
+            col=column,
+        )
+
+    figure.update_layout(
+        width=POSTPRIME_STOCK_CARD_WIDTH,
+        height=POSTPRIME_STOCK_CARD_HEIGHT,
+        autosize=False,
+        paper_bgcolor="#FFFFFF",
+        plot_bgcolor="#FBFCFE",
+        font={
+            "family": CHART_FONT_FAMILY,
+            "color": "#17243A",
+        },
+        title={
+            "text": f"{ticker} {company} | 本日のテクニカル分析 ({date_label})",
+            "x": 0.5,
+            "xanchor": "center",
+            "font": {
+                "family": CHART_FONT_FAMILY,
+                "size": 27,
+                "color": "#17243A",
+            },
+        },
+        margin={"l": 48, "r": 38, "t": 84, "b": 35},
+        showlegend=True,
+        legend={
+            "orientation": "h",
+            "x": 0.02,
+            "y": 0.985,
+            "font": {"size": 12},
+        },
+        bargap=0.18,
+    )
+    figure.update_xaxes(
+        showgrid=True,
+        gridcolor="#E1E6ED",
+        row=1,
+        col=1,
+    )
+    figure.update_yaxes(
+        showgrid=True,
+        gridcolor="#E1E6ED",
+        row=1,
+        col=1,
+    )
+    figure.update_yaxes(
+        showgrid=False,
+        row=4,
+        col=1,
+    )
+    return figure
+
+
+def render_postprime_stock_card_png(
+    indicators: pd.DataFrame,
+    ticker: str,
+    company: str,
+) -> bytes:
+    """Render the stock card at exactly 1600 by 900 pixels."""
+    figure = _prepare_postprime_card_figure(
+        build_postprime_stock_card_figure(indicators, ticker, company)
+    )
+    return figure.to_image(
+        format="png",
+        width=POSTPRIME_STOCK_CARD_WIDTH,
+        height=POSTPRIME_STOCK_CARD_HEIGHT,
         scale=1,
     )
 

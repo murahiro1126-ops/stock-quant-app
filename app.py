@@ -34,6 +34,7 @@ from postprime_export import (
     compose_plotly_png,
     render_plotly_png,
     render_postprime_card_png,
+    render_postprime_stock_card_png,
 )
 from sector_flow import (
     MATRIX_ACCELERATION_THRESHOLD,
@@ -1112,6 +1113,55 @@ if rows:
             file_name=f"{selected}_analysis.png",
             mime="image/png",
             key=f"download-png-{selected}",
+        )
+    stock_card_data = indicators[
+        [
+            "Close",
+            "Volume",
+            "SMA_25",
+            "SMA_75",
+            "SMA_200",
+            "MACD",
+            "RSI",
+            "ADX",
+            "Fear_Greed_Score",
+        ]
+    ]
+    stock_card_signature = hashlib.sha256(
+        stock_card_data.to_json(orient="split", date_format="iso").encode("utf-8")
+    ).hexdigest()[:16]
+    stock_card_key = "postprime-stock-card-png-data"
+    stock_card_ticker_key = "postprime-stock-card-png-ticker"
+    stock_card_signature_key = "postprime-stock-card-png-signature"
+    if st.button(
+        "画像出力(C) | PostPrime用16:9カードを作成",
+        key=f"generate-postprime-card-c-{selected}",
+    ):
+        try:
+            st.session_state[stock_card_key] = render_postprime_stock_card_png(
+                indicators,
+                selected,
+                company,
+            )
+            st.session_state[stock_card_ticker_key] = selected
+            st.session_state[stock_card_signature_key] = stock_card_signature
+        except (ImportError, OSError, RuntimeError, ValueError) as exc:
+            st.session_state.pop(stock_card_key, None)
+            st.session_state.pop(stock_card_ticker_key, None)
+            st.session_state.pop(stock_card_signature_key, None)
+            st.error(f"PostPrime用16:9カードを生成できませんでした: {exc}")
+    if (
+        st.session_state.get(stock_card_ticker_key) == selected
+        and st.session_state.get(stock_card_signature_key)
+        == stock_card_signature
+        and st.session_state.get(stock_card_key)
+    ):
+        st.download_button(
+            "画像出力(C)｜PostPrime用16:9カードをダウンロード",
+            data=st.session_state[stock_card_key],
+            file_name=f"{selected}_postprime-card-16x9.png",
+            mime="image/png",
+            key=f"download-postprime-card-c-{selected}",
         )
 else:
     st.info("分析できる銘柄がありません。銘柄コードと株価データ接続を確認してください。")
