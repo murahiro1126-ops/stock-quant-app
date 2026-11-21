@@ -69,6 +69,19 @@ def _prepare_postprime_card_figure(figure: go.Figure) -> go.Figure:
                 set_card_font_fallbacks(item)
 
     set_card_font_fallbacks(prepared)
+    for trace in prepared.get("data", []):
+        if trace.get("type") != "table":
+            continue
+        cells_font = trace.get("cells", {}).get("font")
+        if not isinstance(cells_font, dict):
+            continue
+        text_family = cells_font.get("family", CHART_FONT_FAMILY)
+        cells_font["family"] = [
+            _with_card_font_fallbacks(text_family),
+            _with_card_font_fallbacks(text_family),
+            _with_card_font_fallbacks(text_family),
+            _with_emoji_font_fallbacks(text_family),
+        ]
     return go.Figure(prepared)
 
 

@@ -199,7 +199,12 @@ def test_render_postprime_card_uses_exact_16_by_9_dimensions(monkeypatch):
     rendered_card = rendered_figures[0]
     assert rendered_card.data[0].textfont.family.startswith("Noto Sans CJK JP")
     assert rendered_card.data[1].header.font.family.startswith("Noto Sans CJK JP")
-    assert "Noto Color Emoji" in rendered_card.data[1].header.font.family
+    cell_font_families = rendered_card.data[1].cells.font.family
+    assert all(
+        family.startswith("Noto Sans CJK JP")
+        for family in cell_font_families[:3]
+    )
+    assert cell_font_families[3].startswith("Noto Color Emoji")
 
     figure = build_postprime_card_figure(metrics, "東証33業種")
     assert figure.layout.width == 1600
