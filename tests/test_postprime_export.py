@@ -2,16 +2,22 @@ from io import BytesIO
 
 from PIL import Image
 import plotly.graph_objects as go
+import pandas as pd
 import pytest
 
 import postprime_export
 from postprime_export import (
     PNG_EMOJI_FONT_FAMILIES,
     PNG_EXPORT_SCALE,
+    POSTPRIME_CARD_HEIGHT,
+    POSTPRIME_CARD_WIDTH,
     build_postprime_export_text,
+    build_postprime_card_figure,
     compose_plotly_png,
     prepare_figure_for_png,
     render_plotly_png,
+    render_postprime_card_png,
+    select_postprime_card_rows,
 )
 
 
@@ -94,6 +100,93 @@ def test_prepare_figure_for_png_does_not_mutate_original_figure():
     assert "🔥 Initial" in prepared.data[0].cells.values[0][0]
     assert "🔥 Initial" in figure.data[0].cells.values[0][0]
     assert "Noto Color Emoji" in prepared.layout.font.family
+
+
+def test_select_postprime_card_rows_prioritizes_initial_signals_and_peak_out():
+    matrix = pd.DataFrame(
+        {
+            "直近5日リターン": [8, 7, 6, 5, 4, 3, 2, 1, 0, -1],
+            "前月リターン": [0] * 10,
+            "初動判定": [
+                "—",
+                "🔥 転換初動",
+                "🚀 加速初動",
+                "⚠️ ピークアウト",
+                "—",
+                "—",
+                "—",
+                "—",
+                "—",
+                "—",
+            ],
+        },
+        index=[f"業種{i}" for i in range(10)],
+    )
+
+    selected = select_postprime_card_rows(matrix)
+
+    assert len(selected) == 7
+    assert list(selected.index[:3]) == ["業種1", "業種2", "業種3"]
+
+
+def test_select_postprime_card_rows_falls_back_to_high_and_low_returns():
+    matrix = pd.DataFrame(
+        {
+            "直近5日リターン": range(10),
+            "前月リターン": [0] * 10,
+            "初動判定": ["—"] * 10,
+        },
+        index=[f"業種{i}" for i in range(10)],
+    )
+
+    selected = select_postprime_card_rows(matrix)
+
+    assert len(selected) == 7
+    assert {"業種9", "業種8", "業種7", "業種6"}.issubset(selected.index)
+    assert {"業種2", "業種1", "業種0"}.issubset(selected.index)
+
+
+def test_render_postprime_card_uses_exact_16_by_9_dimensions(monkeypatch):
+    rows = []
+    for index in range(10):
+        for date in ("2026-01-01", "2026-02-01"):
+            rows.append(
+                {
+                    "Date": date,
+                    "Sector": f"業種{index}",
+                    "Return_20D": float(index - 4),
+                    "Market_Return_20D": -8.18,
+                    "Return_5D": float(10 - index),
+                    "Return_PreviousWeek": -1.0,
+                    "Return_PreviousMonth": -5.0,
+                }
+            )
+    metrics = pd.DataFrame(rows)
+    calls = []
+
+    def fake_to_image(_figure, **options):
+        calls.append(options)
+        return b"card-png"
+
+    monkeypatch.setattr(go.Figure, "to_image", fake_to_image)
+
+    assert render_postprime_card_png(metrics, "東証33業種") == b"card-png"
+
+    assert calls == [
+        {
+            "format": "png",
+            "width": POSTPRIME_CARD_WIDTH,
+            "height": POSTPRIME_CARD_HEIGHT,
+            "scale": 1,
+        }
+    ]
+    figure = build_postprime_card_figure(metrics, "東証33業種")
+    assert figure.layout.width == 1600
+    assert figure.layout.height == 900
+    assert "TOPIX -8.18%" in str(figure.layout.annotations[0].text)
+    assert "業種 20営業日リターン TOP5 / ワースト5" in str(
+        figure.layout.annotations[1].text
+    )
 
 
 def test_compose_plotly_png_stacks_named_chart_images(monkeypatch):

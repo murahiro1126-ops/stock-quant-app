@@ -33,6 +33,7 @@ from postprime_export import (
     build_postprime_export_text,
     compose_plotly_png,
     render_plotly_png,
+    render_postprime_card_png,
 )
 from sector_flow import (
     MATRIX_ACCELERATION_THRESHOLD,
@@ -186,6 +187,7 @@ def load_universe_prices(
 def render_macro_postprime_export(
     mode_name: str,
     mode_key: str,
+    sector_metrics: pd.DataFrame | None,
     export_figures: tuple[tuple[str, go.Figure], ...] | None,
     export_comments: dict[str, str],
     ranking_period: int | None,
@@ -196,7 +198,8 @@ def render_macro_postprime_export(
     st.header("PostPrime投稿用 (第0層) 一括データ出力＆画像書き出し")
     st.caption(
         "第0層のコメントをコピー用にまとめ、画像(A)は3チャートを縦結合、"
-        "画像(B)は多期間比較マトリックス単体で出力します。"
+        "画像(B)は20営業日ランキングと注目セクターをまとめた"
+        "PostPrime投稿用16:9カードとして出力します。"
     )
     postprime_export_text = build_postprime_export_text(
         mode_name, export_comments
@@ -225,12 +228,32 @@ def render_macro_postprime_export(
             sort_keys=True,
         ).encode("utf-8")
     ).hexdigest()[:16]
+    card_signature = export_signature
+    if sector_metrics is not None:
+        card_metrics = (
+            sector_metrics.sort_values("Date")
+            .groupby("Sector", sort=False)
+            .tail(1)[
+                [
+                    "Date",
+                    "Sector",
+                    "Return_20D",
+                    "Return_5D",
+                    "Return_PreviousMonth",
+                    "Market_Return_20D",
+                ]
+            ]
+            .to_json(orient="records", date_format="iso")
+        )
+        card_signature = hashlib.sha256(
+            (export_signature + card_metrics).encode("utf-8")
+        ).hexdigest()[:16]
     composite_image_key = f"postprime-image-a-{mode_key}"
     matrix_image_key = f"postprime-image-b-{mode_key}"
     composite_signature_key = f"{composite_image_key}-signature"
     matrix_signature_key = f"{matrix_image_key}-signature"
 
-    if export_figures is None or matrix_figure is None:
+    if export_figures is None or matrix_figure is None or sector_metrics is None:
         st.info("分析データがないため、画像出力は利用できません。")
         return
 
@@ -262,24 +285,25 @@ def render_macro_postprime_export(
 
     with image_columns[1]:
         if st.button(
-            "画像出力(B) ｜ PostPrime添付用・マトリックスを生成",
+            "画像出力(B)｜PostPrime用16:9カードを生成",
             key=f"generate-{matrix_image_key}",
             width="stretch",
         ):
             try:
-                st.session_state[matrix_image_key] = render_plotly_png(
-                    matrix_figure
+                st.session_state[matrix_image_key] = render_postprime_card_png(
+                    sector_metrics,
+                    mode_name,
                 )
-                st.session_state[matrix_signature_key] = export_signature
+                st.session_state[matrix_signature_key] = card_signature
             except (ImportError, OSError, RuntimeError, ValueError) as exc:
                 st.session_state.pop(matrix_image_key, None)
                 st.session_state.pop(matrix_signature_key, None)
-                st.error(f"マトリックス画像を生成できませんでした: {exc}")
-        if st.session_state.get(matrix_signature_key) == export_signature:
+                st.error(f"16:9カード画像を生成できませんでした: {exc}")
+        if st.session_state.get(matrix_signature_key) == card_signature:
             st.download_button(
-                "画像出力(B)をダウンロード",
+                "PostPrime用16:9カードをダウンロード",
                 data=st.session_state[matrix_image_key],
-                file_name=f"{mode_key}-postprime-matrix.png",
+                file_name=f"{mode_key}-postprime-card-16x9.png",
                 mime="image/png",
                 key=f"download-{matrix_image_key}",
                 width="stretch",
@@ -487,6 +511,7 @@ else:
     render_macro_postprime_export(
         mode_name=mode_name,
         mode_key=mode_key,
+        sector_metrics=sector_metrics if export_figures else None,
         export_figures=export_figures,
         export_comments=export_comments,
         ranking_period=ranking_period if export_figures else None,
