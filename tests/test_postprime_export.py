@@ -149,13 +149,25 @@ def test_select_postprime_card_rows_falls_back_to_high_and_low_returns():
 
 
 def test_render_postprime_card_uses_exact_16_by_9_dimensions(monkeypatch):
+    sector_names = [
+        "空運業",
+        "陸運業",
+        "小売業",
+        "医薬品",
+        "サービス業",
+        "情報・通信業",
+        "その他金融業",
+        "石油・石炭製品",
+        "鉱業",
+        "非鉄金属",
+    ]
     rows = []
     for index in range(10):
         for date in ("2026-01-01", "2026-02-01"):
             rows.append(
                 {
                     "Date": date,
-                    "Sector": f"業種{index}",
+                    "Sector": sector_names[index],
                     "Return_20D": float(index - 4),
                     "Market_Return_20D": -8.18,
                     "Return_5D": float(10 - index),
@@ -165,9 +177,11 @@ def test_render_postprime_card_uses_exact_16_by_9_dimensions(monkeypatch):
             )
     metrics = pd.DataFrame(rows)
     calls = []
+    rendered_figures = []
 
-    def fake_to_image(_figure, **options):
+    def fake_to_image(figure, **options):
         calls.append(options)
+        rendered_figures.append(figure)
         return b"card-png"
 
     monkeypatch.setattr(go.Figure, "to_image", fake_to_image)
@@ -182,6 +196,11 @@ def test_render_postprime_card_uses_exact_16_by_9_dimensions(monkeypatch):
             "scale": 1,
         }
     ]
+    rendered_card = rendered_figures[0]
+    assert rendered_card.data[0].textfont.family.startswith("Noto Sans CJK JP")
+    assert rendered_card.data[1].header.font.family.startswith("Noto Sans CJK JP")
+    assert "Noto Color Emoji" in rendered_card.data[1].header.font.family
+
     figure = build_postprime_card_figure(metrics, "東証33業種")
     assert figure.layout.width == 1600
     assert figure.layout.height == 900
@@ -194,20 +213,28 @@ def test_render_postprime_card_uses_exact_16_by_9_dimensions(monkeypatch):
     assert figure.layout.annotations[0].font.weight == 700
 
     bar = figure.data[0]
+    assert "石油・石炭製品" in bar.y
     assert all(value.isascii() for value in bar.text)
     assert bar.textfont.size == 21
     assert bar.textfont.weight == 700
-    assert figure.layout.xaxis.range[0] <= min(bar.x) - 6
+    assert figure.layout.xaxis.range[0] <= min(bar.x) - 10
+    assert figure.layout.xaxis.range[1] >= max(bar.x) + 10
+    assert figure.layout.xaxis.domain[0] == pytest.approx(0.15)
     assert figure.layout.xaxis.ticksuffix == "%"
     assert figure.layout.xaxis.tickfont.weight == 600
 
     table = figure.data[1]
     header = table.header.to_plotly_json()
     cells = table.cells.to_plotly_json()
-    assert header["font"]["size"] == 23
+    assert header["font"]["size"] == 22
     assert header["font"]["weight"] == 700
-    assert cells["font"]["size"] == 20
+    assert cells["font"]["size"] == 18
     assert cells["font"]["weight"] == 700
+    assert header["font"]["color"] == "#FFFFFF"
+    assert table.columnwidth == (0.31, 0.21, 0.21, 0.27)
+    assert table.domain.x == (0.595, 0.985)
+    assert len(cells["values"][0]) == 7
+    assert all("\n" not in signal for signal in cells["values"][3])
     assert all(
         value.isascii()
         for column in cells["values"][1:3]

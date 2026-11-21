@@ -39,6 +39,39 @@ def _with_emoji_font_fallbacks(family: object) -> str:
     return ", ".join(families)
 
 
+def _with_card_font_fallbacks(family: object) -> str:
+    primary_families = [
+        name.strip()
+        for name in str(family or CHART_FONT_FAMILY).split(",")
+        if name.strip()
+        and name.strip().lower()
+        not in {"sans-serif", *_EMOJI_FONT_FAMILY_NAMES}
+    ]
+    return ", ".join(
+        [*primary_families, *PNG_EMOJI_FONT_FAMILIES, "sans-serif"]
+    )
+
+
+def _prepare_postprime_card_figure(figure: go.Figure) -> go.Figure:
+    """Keep normal text in the CJK font and use emoji fonts only as fallbacks."""
+    prepared = figure.to_plotly_json()
+
+    def set_card_font_fallbacks(value: object) -> None:
+        if isinstance(value, dict):
+            for key, item in value.items():
+                if key.lower().endswith("font") and isinstance(item, dict):
+                    item["family"] = _with_card_font_fallbacks(
+                        item.get("family")
+                    )
+                set_card_font_fallbacks(item)
+        elif isinstance(value, list):
+            for item in value:
+                set_card_font_fallbacks(item)
+
+    set_card_font_fallbacks(prepared)
+    return go.Figure(prepared)
+
+
 def _prepare_plotly_value(value: object) -> object:
     if isinstance(value, dict):
         prepared = {
@@ -277,13 +310,13 @@ def build_postprime_card_figure(
     )
     figure.add_trace(
         go.Table(
-            columnwidth=[1.55, 0.92, 0.85, 1.65],
+            columnwidth=[0.31, 0.21, 0.21, 0.27],
             header={
                 "values": ["業種", "直近5日", "前月", "判定"],
                 "fill_color": "#17243A",
                 "font": {
                     "color": "#FFFFFF",
-                    "size": 23,
+                    "size": 22,
                     "family": CHART_FONT_FAMILY,
                     "weight": 700,
                 },
@@ -296,7 +329,7 @@ def build_postprime_card_figure(
                 "fill_color": [row_colors] * 4,
                 "font": {
                     "color": "#101828",
-                    "size": 20,
+                    "size": 18,
                     "family": CHART_FONT_FAMILY,
                     "weight": 700,
                 },
@@ -310,15 +343,15 @@ def build_postprime_card_figure(
     )
     figure.update_xaxes(
         range=[
-            value_min - max(6.0, value_span * 0.15),
-            value_max + max(3.0, value_span * 0.08),
+            value_min - max(10.0, value_span * 0.18),
+            value_max + max(10.0, value_span * 0.18),
         ],
         tickfont={"size": 17, "color": "#253247", "weight": 600},
         ticksuffix="%",
         showgrid=True,
         gridcolor="#E1E6ED",
         zeroline=False,
-        domain=[0.065, 0.56],
+        domain=[0.15, 0.56],
         row=1,
         col=1,
     )
@@ -339,7 +372,7 @@ def build_postprime_card_figure(
         col=1,
     )
     figure.data[1].domain = {
-        "x": [0.605, 0.985],
+        "x": [0.595, 0.985],
         "y": [
             table_center - table_half_domain,
             table_center + table_half_domain,
@@ -469,10 +502,10 @@ def build_postprime_card_figure(
                 "xref": "x",
                 "yref": "paper",
                 "x": market_return,
-                "y": 0.79,
+                "y": 0.802,
                 "showarrow": False,
                 "font": {
-                    "size": 16,
+                    "size": 20,
                     "color": "#7445A5",
                     "weight": 700,
                 },
@@ -489,8 +522,11 @@ def build_postprime_card_figure(
 
 def render_postprime_card_png(metrics: pd.DataFrame, mode_name: str) -> bytes:
     """Render the card at exactly 1600 by 900 pixels."""
-    return render_plotly_png(
-        build_postprime_card_figure(metrics, mode_name),
+    figure = _prepare_postprime_card_figure(
+        build_postprime_card_figure(metrics, mode_name)
+    )
+    return figure.to_image(
+        format="png",
         width=POSTPRIME_CARD_WIDTH,
         height=POSTPRIME_CARD_HEIGHT,
         scale=1,
