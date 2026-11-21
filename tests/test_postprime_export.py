@@ -247,6 +247,12 @@ def test_render_postprime_card_uses_exact_16_by_9_dimensions(monkeypatch):
     assert topix_label.bgcolor == "#FFFFFF"
     assert topix_label.borderwidth == 1
     assert topix_label.font.weight == 700
+    assert len(figure.layout.shapes) == 3
+    assert all(shape.type == "line" for shape in figure.layout.shapes)
+    assert any(
+        shape.y0 == 0.875 and shape.y1 == 0.875
+        for shape in figure.layout.shapes
+    )
 
 
 def test_postprime_card_uses_ascii_hyphens_for_empty_values_and_signals():
