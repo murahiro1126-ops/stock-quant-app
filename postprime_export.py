@@ -201,6 +201,9 @@ def build_postprime_card_figure(
         latest["Market_Return_20D"], errors="coerce"
     ).dropna()
     market_return = float(market_values.iloc[-1]) if not market_values.empty else 0.0
+    value_min = min(float(extremes["Return_20D"].min()), market_return, 0)
+    value_max = max(float(extremes["Return_20D"].max()), market_return, 0)
+    value_span = float(extremes["Return_20D"].max() - extremes["Return_20D"].min())
     latest_date = pd.to_datetime(metrics["Date"], errors="coerce").max()
     date_label = latest_date.strftime("%Y-%m-%d") if pd.notna(latest_date) else "—"
 
@@ -211,16 +214,19 @@ def build_postprime_card_figure(
         [
             f"{value:+.2f}%"
             if pd.notna(value) and np.isfinite(value)
-            else "—"
+            else "-"
             for value in card_rows["直近5日リターン"]
         ],
         [
             f"{value:+.2f}%"
             if pd.notna(value) and np.isfinite(value)
-            else "—"
+            else "-"
             for value in card_rows["前月リターン"]
         ],
-        [str(signal) for signal in card_rows["初動判定"]],
+        [
+            "-" if signal == "—" else str(signal)
+            for signal in card_rows["初動判定"]
+        ],
     ]
     row_colors = [
         (
@@ -232,6 +238,9 @@ def build_postprime_card_figure(
         )
         for signal in card_rows["初動判定"]
     ]
+    table_height = 62 + len(card_rows) * 78
+    table_center = (0.065 + 0.825) / 2
+    table_half_domain = table_height / (2 * POSTPRIME_CARD_HEIGHT)
 
     figure = make_subplots(
         rows=1,
@@ -254,7 +263,12 @@ def build_postprime_card_figure(
             },
             text=[f"{value:+.1f}%" for value in extremes["Return_20D"]],
             textposition="outside",
-            textfont={"size": 17, "color": "#172033", "family": CHART_FONT_FAMILY},
+            textfont={
+                "size": 21,
+                "color": "#172033",
+                "family": CHART_FONT_FAMILY,
+                "weight": 700,
+            },
             cliponaxis=False,
             hovertemplate="%{y}<br>20営業日リターン: %{x:+.2f}%<extra></extra>",
         ),
@@ -269,11 +283,12 @@ def build_postprime_card_figure(
                 "fill_color": "#17243A",
                 "font": {
                     "color": "#FFFFFF",
-                    "size": 18,
+                    "size": 23,
                     "family": CHART_FONT_FAMILY,
+                    "weight": 700,
                 },
                 "align": ["left", "center", "center", "center"],
-                "height": 54,
+                "height": 62,
                 "line": {"color": "#D6DCE5", "width": 1},
             },
             cells={
@@ -281,11 +296,12 @@ def build_postprime_card_figure(
                 "fill_color": [row_colors] * 4,
                 "font": {
                     "color": "#101828",
-                    "size": 16,
+                    "size": 20,
                     "family": CHART_FONT_FAMILY,
+                    "weight": 700,
                 },
                 "align": ["left", "center", "center", "center"],
-                "height": 70,
+                "height": 78,
                 "line": {"color": "#D6DCE5", "width": 1},
             },
         ),
@@ -294,10 +310,10 @@ def build_postprime_card_figure(
     )
     figure.update_xaxes(
         range=[
-            min(float(extremes["Return_20D"].min()), market_return, 0) - 2,
-            max(float(extremes["Return_20D"].max()), market_return, 0) + 3,
+            value_min - max(6.0, value_span * 0.15),
+            value_max + max(3.0, value_span * 0.08),
         ],
-        tickfont={"size": 14, "color": "#253247"},
+        tickfont={"size": 17, "color": "#253247", "weight": 600},
         ticksuffix="%",
         showgrid=True,
         gridcolor="#E1E6ED",
@@ -310,9 +326,10 @@ def build_postprime_card_figure(
         categoryorder="array",
         categoryarray=sector_order,
         tickfont={
-            "size": 17,
+            "size": 21,
             "color": "#172033",
             "family": CHART_FONT_FAMILY,
+            "weight": 700,
         },
         ticklen=0,
         showgrid=True,
@@ -321,14 +338,24 @@ def build_postprime_card_figure(
         row=1,
         col=1,
     )
-    figure.data[1].domain = {"x": [0.605, 0.985], "y": [0.105, 0.785]}
+    figure.data[1].domain = {
+        "x": [0.605, 0.985],
+        "y": [
+            table_center - table_half_domain,
+            table_center + table_half_domain,
+        ],
+    }
     figure.update_layout(
         width=POSTPRIME_CARD_WIDTH,
         height=POSTPRIME_CARD_HEIGHT,
         autosize=False,
         paper_bgcolor="#FFFFFF",
         plot_bgcolor="#FBFCFE",
-        font={"family": CHART_FONT_FAMILY, "color": "#101828"},
+        font={
+            "family": CHART_FONT_FAMILY,
+            "color": "#101828",
+            "weight": 600,
+        },
         margin={"l": 22, "r": 22, "t": 24, "b": 18},
         showlegend=False,
         bargap=0.25,
@@ -392,7 +419,7 @@ def build_postprime_card_figure(
             {
                 "text": (
                     f"{mode_name} クオンツ分析 | "
-                    f"TOPIX {market_return:+.2f}%（{date_label}）"
+                    f"TOPIX {market_return:+.2f}% ({date_label})"
                 ),
                 "xref": "paper",
                 "yref": "paper",
@@ -400,9 +427,10 @@ def build_postprime_card_figure(
                 "y": 0.94,
                 "showarrow": False,
                 "font": {
-                    "size": 27,
+                    "size": 34,
                     "color": "#101828",
                     "family": CHART_FONT_FAMILY,
+                    "weight": 700,
                 },
                 "xanchor": "center",
             },
@@ -414,9 +442,10 @@ def build_postprime_card_figure(
                 "y": 0.845,
                 "showarrow": False,
                 "font": {
-                    "size": 21,
+                    "size": 26,
                     "color": "#172033",
                     "family": CHART_FONT_FAMILY,
+                    "weight": 700,
                 },
                 "xanchor": "center",
             },
@@ -428,9 +457,10 @@ def build_postprime_card_figure(
                 "y": 0.845,
                 "showarrow": False,
                 "font": {
-                    "size": 21,
+                    "size": 26,
                     "color": "#172033",
                     "family": CHART_FONT_FAMILY,
+                    "weight": 700,
                 },
                 "xanchor": "center",
             },
@@ -441,7 +471,15 @@ def build_postprime_card_figure(
                 "x": market_return,
                 "y": 0.79,
                 "showarrow": False,
-                "font": {"size": 13, "color": "#7445A5"},
+                "font": {
+                    "size": 16,
+                    "color": "#7445A5",
+                    "weight": 700,
+                },
+                "bgcolor": "#FFFFFF",
+                "bordercolor": "#D8DDE5",
+                "borderwidth": 1,
+                "borderpad": 4,
                 "xanchor": "center",
             },
         ],

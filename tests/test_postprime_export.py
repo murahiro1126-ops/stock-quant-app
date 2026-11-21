@@ -1,8 +1,8 @@
 from io import BytesIO
 
+import pandas as pd
 from PIL import Image
 import plotly.graph_objects as go
-import pandas as pd
 import pytest
 
 import postprime_export
@@ -11,8 +11,8 @@ from postprime_export import (
     PNG_EXPORT_SCALE,
     POSTPRIME_CARD_HEIGHT,
     POSTPRIME_CARD_WIDTH,
-    build_postprime_export_text,
     build_postprime_card_figure,
+    build_postprime_export_text,
     compose_plotly_png,
     prepare_figure_for_png,
     render_plotly_png,
@@ -31,7 +31,9 @@ def test_build_postprime_export_text_includes_prompt_and_ordered_comments():
         },
     )
 
-    assert text.index("添付画像(A)") < text.index("【RRG自動コメント】")
+    assert text.index("以下の分析コメントと分析画像を参考に") < text.index(
+        "【RRG自動コメント】"
+    )
     assert text.index("【RRG自動コメント】") < text.index(
         "【モメンタム自動コメント】"
     )
@@ -184,9 +186,74 @@ def test_render_postprime_card_uses_exact_16_by_9_dimensions(monkeypatch):
     assert figure.layout.width == 1600
     assert figure.layout.height == 900
     assert "TOPIX -8.18%" in str(figure.layout.annotations[0].text)
+    assert "(2026-02-01)" in str(figure.layout.annotations[0].text)
     assert "業種 20営業日リターン TOP5 / ワースト5" in str(
         figure.layout.annotations[1].text
     )
+    assert figure.layout.annotations[0].font.size == 34
+    assert figure.layout.annotations[0].font.weight == 700
+
+    bar = figure.data[0]
+    assert all(value.isascii() for value in bar.text)
+    assert bar.textfont.size == 21
+    assert bar.textfont.weight == 700
+    assert figure.layout.xaxis.range[0] <= min(bar.x) - 6
+    assert figure.layout.xaxis.ticksuffix == "%"
+    assert figure.layout.xaxis.tickfont.weight == 600
+
+    table = figure.data[1]
+    header = table.header.to_plotly_json()
+    cells = table.cells.to_plotly_json()
+    assert header["font"]["size"] == 23
+    assert header["font"]["weight"] == 700
+    assert cells["font"]["size"] == 20
+    assert cells["font"]["weight"] == 700
+    assert all(
+        value.isascii()
+        for column in cells["values"][1:3]
+        for value in column
+    )
+
+    domain_y = table.domain.y
+    assert (domain_y[0] + domain_y[1]) / 2 == pytest.approx((0.065 + 0.825) / 2)
+    topix_label = figure.layout.annotations[-1]
+    assert topix_label.bgcolor == "#FFFFFF"
+    assert topix_label.borderwidth == 1
+    assert topix_label.font.weight == 700
+
+
+def test_postprime_card_uses_ascii_hyphens_for_empty_values_and_signals():
+    metrics = pd.DataFrame(
+        [
+            {
+                "Date": "2026-02-01",
+                "Sector": "欠損業種",
+                "Return_20D": 1.25,
+                "Market_Return_20D": -0.5,
+                "Return_5D": float("nan"),
+                "Return_PreviousWeek": float("nan"),
+                "Return_PreviousMonth": float("nan"),
+            },
+            {
+                "Date": "2026-02-01",
+                "Sector": "中立業種",
+                "Return_20D": 2.5,
+                "Market_Return_20D": -0.5,
+                "Return_5D": 0.1,
+                "Return_PreviousWeek": -0.5,
+                "Return_PreviousMonth": 0.5,
+            },
+        ]
+    )
+
+    figure = build_postprime_card_figure(metrics, "東証33業種")
+
+    values = figure.data[1].cells.values
+    assert values[1] == ["+0.10%", "-"]
+    assert values[2] == ["+0.50%", "-"]
+    assert values[3] == ["-", "データ不足"]
+    assert all(value.isascii() for column in values[1:3] for value in column)
+    assert values[3][0].isascii()
 
 
 def test_compose_plotly_png_stacks_named_chart_images(monkeypatch):
