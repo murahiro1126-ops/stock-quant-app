@@ -1128,7 +1128,18 @@ if rows:
         ]
     ]
     stock_card_signature = hashlib.sha256(
-        stock_card_data.to_json(orient="split", date_format="iso").encode("utf-8")
+        (
+            stock_card_data.to_json(orient="split", date_format="iso")
+            + json.dumps(
+                {
+                    "range_position": current_score["range_position"],
+                    "buy_confidence": current_score["buy_confidence"],
+                    "sell_confidence": current_score["sell_confidence"],
+                    "rank": rank,
+                },
+                sort_keys=True,
+            )
+        ).encode("utf-8")
     ).hexdigest()[:16]
     stock_card_key = "postprime-stock-card-png-data"
     stock_card_ticker_key = "postprime-stock-card-png-ticker"
@@ -1142,6 +1153,10 @@ if rows:
                 indicators,
                 selected,
                 company,
+                range_position=current_score["range_position"],
+                buy_confidence=current_score["buy_confidence"],
+                sell_confidence=current_score["sell_confidence"],
+                rank=rank,
             )
             st.session_state[stock_card_ticker_key] = selected
             st.session_state[stock_card_signature_key] = stock_card_signature

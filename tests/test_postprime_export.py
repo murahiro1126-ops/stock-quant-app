@@ -1,5 +1,6 @@
 from io import BytesIO
 
+import numpy as np
 import pandas as pd
 from PIL import Image
 import plotly.graph_objects as go
@@ -323,19 +324,20 @@ def test_extract_latest_stock_card_values_uses_latest_indicator_row():
 def test_postprime_stock_card_displays_latest_values_and_renders_16_by_9(
     monkeypatch,
 ):
+    dates = pd.date_range("2025-01-01", periods=300, freq="B")
     indicators = pd.DataFrame(
         {
-            "Close": [101.0, 105.0],
-            "Volume": [1000, 1500],
-            "SMA_25": [99.0, 100.0],
-            "SMA_75": [95.0, 96.0],
-            "SMA_200": [90.0, 91.0],
-            "MACD": [-0.5, -1.25],
-            "RSI": [48.0, 62.5],
-            "ADX": [20.0, 31.0],
-            "Fear_Greed_Score": [55.0, 73.0],
+            "Close": np.linspace(80.0, 105.0, len(dates)),
+            "Volume": np.arange(len(dates)) * 100 + 1000,
+            "SMA_25": np.linspace(79.0, 100.0, len(dates)),
+            "SMA_75": np.linspace(78.0, 96.0, len(dates)),
+            "SMA_200": np.linspace(77.0, 91.0, len(dates)),
+            "MACD": [-0.5] * (len(dates) - 1) + [-1.25],
+            "RSI": [48.0] * (len(dates) - 1) + [62.5],
+            "ADX": [20.0] * (len(dates) - 1) + [31.0],
+            "Fear_Greed_Score": [55.0] * (len(dates) - 1) + [73.0],
         },
-        index=pd.to_datetime(["2026-02-02", "2026-02-03"]),
+        index=dates,
     )
     rendered = []
 
@@ -346,7 +348,13 @@ def test_postprime_stock_card_displays_latest_values_and_renders_16_by_9(
     monkeypatch.setattr(go.Figure, "to_image", fake_to_image)
 
     assert render_postprime_stock_card_png(
-        indicators, "1234.T", "テスト銘柄"
+        indicators,
+        "1234.T",
+        "テスト銘柄",
+        range_position=63.4,
+        buy_confidence=72,
+        sell_confidence=18,
+        rank="A",
     ) == b"stock-card"
 
     figure, options = rendered[0]
@@ -361,6 +369,12 @@ def test_postprime_stock_card_displays_latest_values_and_renders_16_by_9(
     assert {"終値", "25日線", "75日線", "200日線", "出来高"}.issubset(
         {trace.name for trace in figure.data}
     )
+    close_trace = next(trace for trace in figure.data if trace.name == "終値")
+    assert len(close_trace.x) == 252
+    annotations = {annotation.text: annotation for annotation in figure.layout.annotations}
+    assert annotations["63.4%"].text == "63.4%"
+    assert "買い確度　72%　/　売り確度　18%" in annotations
+    assert annotations["Rank A"].text == "Rank A"
     gauges = {
         trace.title.text: trace
         for trace in figure.data
@@ -376,6 +390,11 @@ def test_postprime_stock_card_displays_latest_values_and_renders_16_by_9(
     assert gauges["RSI"].gauge.bar.color == "#16A085"
     assert gauges["ADX"].gauge.bar.color == "#16A085"
     assert gauges["Fear & Greed"].gauge.bar.color == "#16A085"
+    assert {
+        annotation.text
+        for annotation in figure.layout.annotations
+        if annotation.text in {"マイナス圏", "中立域", "強いトレンド", "貪欲"}
+    } == {"マイナス圏", "中立域", "強いトレンド", "貪欲"}
 
 
 def test_compose_plotly_png_stacks_named_chart_images(monkeypatch):

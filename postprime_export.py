@@ -659,8 +659,13 @@ def build_postprime_stock_card_figure(
     indicators: pd.DataFrame,
     ticker: str,
     company: str,
+    *,
+    range_position: float | None = None,
+    buy_confidence: int | None = None,
+    sell_confidence: int | None = None,
+    rank: str | None = None,
 ) -> go.Figure:
-    """Build a 16:9 stock chart with today's four technical indicator gauges."""
+    """Build a 16:9 stock card with a summary bar and four indicator gauges."""
     chart_columns = {"Close", "Volume", "SMA_25", "SMA_75", "SMA_200"}
     if not isinstance(indicators, pd.DataFrame) or indicators.empty:
         raise ValueError("カード画像を描画する株価データがありません。")
@@ -671,7 +676,7 @@ def build_postprime_stock_card_figure(
             + ", ".join(sorted(missing_chart_columns))
         )
     latest_values = extract_latest_stock_card_values(indicators)
-    chart_data = indicators.tail(120)
+    chart_data = indicators.tail(252)
     date_value = pd.to_datetime(indicators.index[-1], errors="coerce")
     date_label = (
         date_value.strftime("%Y-%m-%d")
@@ -809,6 +814,17 @@ def build_postprime_stock_card_figure(
             row=row,
             col=column,
         )
+    gauge_domains = {
+        "MACD": ([0.65, 0.81], [0.52, 0.77]),
+        "RSI": ([0.83, 0.99], [0.52, 0.77]),
+        "ADX": ([0.65, 0.81], [0.17, 0.42]),
+        "Fear & Greed": ([0.83, 0.99], [0.17, 0.42]),
+    }
+    for trace in figure.data:
+        if trace.type != "indicator":
+            continue
+        x_domain, y_domain = gauge_domains[trace.title.text]
+        trace.domain = {"x": x_domain, "y": y_domain}
 
     figure.update_layout(
         width=POSTPRIME_STOCK_CARD_WIDTH,
@@ -824,22 +840,28 @@ def build_postprime_stock_card_figure(
             "text": f"{ticker} {company} | 本日のテクニカル分析 ({date_label})",
             "x": 0.5,
             "xanchor": "center",
+            "y": 0.985,
+            "yanchor": "top",
             "font": {
                 "family": CHART_FONT_FAMILY,
                 "size": 27,
                 "color": "#17243A",
             },
         },
-        margin={"l": 48, "r": 38, "t": 84, "b": 35},
+        margin={"l": 48, "r": 28, "t": 24, "b": 30},
         showlegend=True,
         legend={
             "orientation": "h",
             "x": 0.02,
-            "y": 0.985,
-            "font": {"size": 12},
+            "y": 0.805,
+            "font": {"size": 14, "weight": 600},
         },
         bargap=0.18,
     )
+    figure.layout.xaxis.domain = [0.06, 0.61]
+    figure.layout.yaxis.domain = [0.205, 0.785]
+    figure.layout.xaxis2.domain = [0.06, 0.61]
+    figure.layout.yaxis2.domain = [0.075, 0.175]
     figure.update_xaxes(
         showgrid=True,
         gridcolor="#E1E6ED",
@@ -857,6 +879,167 @@ def build_postprime_stock_card_figure(
         row=4,
         col=1,
     )
+    range_value = (
+        float(range_position)
+        if range_position is not None and np.isfinite(range_position)
+        else None
+    )
+    range_label = f"{range_value:.1f}%" if range_value is not None else "N/A"
+    range_x = (
+        0.055 + 0.29 * float(np.clip(range_value, 0, 100)) / 100
+        if range_value is not None
+        else 0.055
+    )
+    buy_label = f"{buy_confidence}%" if buy_confidence is not None else "N/A"
+    sell_label = f"{sell_confidence}%" if sell_confidence is not None else "N/A"
+    rank_label = f"Rank {rank}" if rank else "Rank N/A"
+    figure.update_layout(
+        shapes=[
+            {
+                "type": "rect",
+                "xref": "paper",
+                "yref": "paper",
+                "x0": 0.04,
+                "x1": 0.96,
+                "y0": 0.85,
+                "y1": 0.955,
+                "line": {"color": "#D8E0EA", "width": 1},
+                "fillcolor": "#F7F9FC",
+                "layer": "below",
+            },
+            {
+                "type": "line",
+                "xref": "paper",
+                "yref": "paper",
+                "x0": 0.055,
+                "x1": 0.345,
+                "y0": 0.875,
+                "y1": 0.875,
+                "line": {"color": "#D8E0EA", "width": 8},
+            },
+            {
+                "type": "line",
+                "xref": "paper",
+                "yref": "paper",
+                "x0": 0.055,
+                "x1": range_x,
+                "y0": 0.875,
+                "y1": 0.875,
+                "line": {
+                    "color": "#16A085" if range_value is not None else "#98A2B3",
+                    "width": 8,
+                },
+            },
+            {
+                "type": "line",
+                "xref": "paper",
+                "yref": "paper",
+                "x0": 0.39,
+                "x1": 0.39,
+                "y0": 0.865,
+                "y1": 0.94,
+                "line": {"color": "#D8E0EA", "width": 1},
+            },
+            {
+                "type": "line",
+                "xref": "paper",
+                "yref": "paper",
+                "x0": 0.72,
+                "x1": 0.72,
+                "y0": 0.865,
+                "y1": 0.94,
+                "line": {"color": "#D8E0EA", "width": 1},
+            },
+        ],
+        annotations=[
+            {
+                "text": "5年レンジ位置",
+                "xref": "paper",
+                "yref": "paper",
+                "x": 0.055,
+                "y": 0.93,
+                "xanchor": "left",
+                "showarrow": False,
+                "font": {"size": 17, "color": "#475467", "weight": 600},
+            },
+            {
+                "text": range_label,
+                "xref": "paper",
+                "yref": "paper",
+                "x": 0.345,
+                "y": 0.93,
+                "xanchor": "right",
+                "showarrow": False,
+                "font": {"size": 23, "color": "#17243A", "weight": 700},
+            },
+            {
+                "text": f"買い確度　{buy_label}　/　売り確度　{sell_label}",
+                "xref": "paper",
+                "yref": "paper",
+                "x": 0.555,
+                "y": 0.905,
+                "xanchor": "center",
+                "showarrow": False,
+                "font": {
+                    "size": 20,
+                    "color": "#17243A",
+                    "family": CHART_FONT_FAMILY,
+                    "weight": 700,
+                },
+            },
+            {
+                "text": "AI信頼度",
+                "xref": "paper",
+                "yref": "paper",
+                "x": 0.755,
+                "y": 0.93,
+                "xanchor": "left",
+                "showarrow": False,
+                "font": {
+                    "size": 17,
+                    "color": "#475467",
+                    "family": CHART_FONT_FAMILY,
+                    "weight": 600,
+                },
+            },
+            {
+                "text": rank_label,
+                "xref": "paper",
+                "yref": "paper",
+                "x": 0.94,
+                "y": 0.905,
+                "xanchor": "right",
+                "showarrow": False,
+                "font": {
+                    "size": 23,
+                    "color": "#17243A",
+                    "family": CHART_FONT_FAMILY,
+                    "weight": 700,
+                },
+            },
+            *[
+                {
+                    "text": str(_stock_card_gauge_style(name, latest_values[name])["state"]),
+                    "xref": "paper",
+                    "yref": "paper",
+                    "x": sum(gauge_domains[name][0]) / 2,
+                    "y": gauge_domains[name][1][0] + 0.005,
+                    "showarrow": False,
+                    "font": {
+                        "family": CHART_FONT_FAMILY,
+                        "size": 16,
+                        "color": str(
+                            _stock_card_gauge_style(name, latest_values[name])[
+                                "color"
+                            ]
+                        ),
+                        "weight": 700,
+                    },
+                }
+                for name, _, _ in gauge_positions
+            ],
+        ],
+    )
     return figure
 
 
@@ -864,10 +1047,23 @@ def render_postprime_stock_card_png(
     indicators: pd.DataFrame,
     ticker: str,
     company: str,
+    *,
+    range_position: float | None = None,
+    buy_confidence: int | None = None,
+    sell_confidence: int | None = None,
+    rank: str | None = None,
 ) -> bytes:
     """Render the stock card at exactly 1600 by 900 pixels."""
     figure = _prepare_postprime_card_figure(
-        build_postprime_stock_card_figure(indicators, ticker, company)
+        build_postprime_stock_card_figure(
+            indicators,
+            ticker,
+            company,
+            range_position=range_position,
+            buy_confidence=buy_confidence,
+            sell_confidence=sell_confidence,
+            rank=rank,
+        )
     )
     return figure.to_image(
         format="png",
