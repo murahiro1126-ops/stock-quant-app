@@ -373,7 +373,9 @@ def test_postprime_stock_card_displays_latest_values_and_renders_16_by_9(
     assert len(close_trace.x) == 252
     annotations = {annotation.text: annotation for annotation in figure.layout.annotations}
     assert annotations["63.4%"].text == "63.4%"
-    assert "買い確度　72%　/　売り確度　18%" in annotations
+    assert annotations["買い確度"].font.size == 20
+    assert annotations["72%"].font.size == 25
+    assert annotations["売り確度 18%（独立スコア）"].text
     assert annotations["Rank A"].text == "Rank A"
     gauges = {
         trace.title.text: trace
@@ -386,15 +388,34 @@ def test_postprime_stock_card_displays_latest_values_and_renders_16_by_9(
         "ADX": 31.0,
         "Fear & Greed": 73.0,
     }
-    assert gauges["MACD"].gauge.bar.color == "#E74C3C"
-    assert gauges["RSI"].gauge.bar.color == "#16A085"
-    assert gauges["ADX"].gauge.bar.color == "#16A085"
-    assert gauges["Fear & Greed"].gauge.bar.color == "#16A085"
+    assert gauges["MACD"].gauge.threshold.line.color == "#E74C3C"
+    assert gauges["RSI"].gauge.threshold.line.color == "#16A085"
+    assert gauges["ADX"].gauge.threshold.line.color == "#F39C12"
+    assert gauges["Fear & Greed"].gauge.threshold.line.color == "#16A085"
+    assert gauges["MACD"].gauge.steps[0].range == (-1.875, -0.1875)
+    assert gauges["MACD"].gauge.steps[1].color == "#FCE8C7"
+    assert [step.range for step in gauges["RSI"].gauge.steps] == [
+        (0, 30),
+        (30, 70),
+        (70, 100),
+    ]
+    assert [step.range for step in gauges["ADX"].gauge.steps] == [
+        (0, 20),
+        (20, 40),
+        (40, 100),
+    ]
+    assert [step.range for step in gauges["Fear & Greed"].gauge.steps] == [
+        (0, 25),
+        (25, 45),
+        (45, 56),
+        (56, 75),
+        (75, 100),
+    ]
     assert {
         annotation.text
         for annotation in figure.layout.annotations
-        if annotation.text in {"マイナス圏", "中立域", "強いトレンド", "貪欲"}
-    } == {"マイナス圏", "中立域", "強いトレンド", "貪欲"}
+        if annotation.text in {"マイナス圏", "中立域", "トレンド発生", "貪欲"}
+    } == {"マイナス圏", "中立域", "トレンド発生", "貪欲"}
 
 
 def test_compose_plotly_png_stacks_named_chart_images(monkeypatch):

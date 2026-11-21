@@ -558,26 +558,33 @@ def _stock_card_gauge_style(
     name: str,
     value: float | None,
 ) -> dict[str, object]:
-    """Keep gauge thresholds and visual state separate from trace rendering."""
+    """Map each indicator value to its gauge range, zones, and state label."""
     if name == "MACD":
         radius = max(1.0, abs(value) * 1.5) if value is not None else 1.0
-        color = (
-            "#16A085"
-            if value is not None and value > 0
-            else "#E74C3C"
-            if value is not None and value < 0
+        neutral_limit = max(radius * 0.1, 0.05)
+        color = "#16A085" if value is not None and value > neutral_limit else (
+            "#E74C3C"
+            if value is not None and value < -neutral_limit
+            else "#F39C12"
+            if value is not None
             else "#98A2B3"
         )
         state = (
             "プラス圏"
-            if value is not None and value > 0
+            if value is not None and value > neutral_limit
             else "マイナス圏"
-            if value is not None and value < 0
-            else "ゼロ近辺"
+            if value is not None and value < -neutral_limit
+            else "転換付近"
             if value is not None
             else "取得不可"
         )
         value_range = [-radius, radius]
+        steps = [
+            {"range": [-radius, -neutral_limit], "color": "#F8D8D5"},
+            {"range": [-neutral_limit, neutral_limit], "color": "#FCE8C7"},
+            {"range": [neutral_limit, radius], "color": "#D6F1E8"},
+        ]
+        tick_values = [-radius, 0, radius]
         value_format = ".2f"
         suffix = ""
     elif name == "RSI":
@@ -600,56 +607,82 @@ def _stock_card_gauge_style(
             else "取得不可"
         )
         value_range = [0, 100]
+        steps = [
+            {"range": [0, 30], "color": "#F8D8D5"},
+            {"range": [30, 70], "color": "#E5EBF2"},
+            {"range": [70, 100], "color": "#F8D8D5"},
+        ]
+        tick_values = [0, 50, 100]
         value_format = ".1f"
         suffix = ""
     elif name == "ADX":
         color = (
             "#16A085"
-            if value is not None and value >= 25
+            if value is not None and value >= 40
             else "#F39C12"
             if value is not None and value >= 20
             else "#98A2B3"
         )
         state = (
-            "強いトレンド"
-            if value is not None and value >= 25
+            "非常に強い"
+            if value is not None and value >= 40
             else "トレンド発生"
             if value is not None and value >= 20
-            else "弱いトレンド"
+            else "レンジ気味"
             if value is not None
             else "取得不可"
         )
         value_range = [0, 100]
+        steps = [
+            {"range": [0, 20], "color": "#E5EBF2"},
+            {"range": [20, 40], "color": "#FCE8C7"},
+            {"range": [40, 100], "color": "#D6F1E8"},
+        ]
+        tick_values = [0, 20, 40, 100]
         value_format = ".1f"
         suffix = ""
     else:
-        color = (
-            "#E74C3C"
-            if value is not None and value <= 25
-            else "#F39C12"
-            if value is not None and value <= 40
+        color = "#D9534F" if value is not None and value < 25 else (
+            "#E67E22"
+            if value is not None and value < 45
             else "#98A2B3"
-            if value is not None and value <= 60
+            if value is not None and value <= 55
             else "#16A085"
+            if value is not None and value < 75
+            else "#7B4AB5"
             if value is not None
             else "#98A2B3"
         )
         state = (
-            "恐怖"
-            if value is not None and value <= 40
+            "極度の恐怖"
+            if value is not None and value < 25
+            else "恐怖"
+            if value is not None and value < 45
             else "中立"
-            if value is not None and value <= 60
+            if value is not None and value <= 55
             else "貪欲"
+            if value is not None and value < 75
+            else "極度の熱狂"
             if value is not None
             else "取得不可"
         )
         value_range = [0, 100]
+        steps = [
+            {"range": [0, 25], "color": "#F8D8D5"},
+            {"range": [25, 45], "color": "#FCE8C7"},
+            {"range": [45, 56], "color": "#E5EBF2"},
+            {"range": [56, 75], "color": "#D6F1E8"},
+            {"range": [75, 100], "color": "#E9DDF7"},
+        ]
+        tick_values = [0, 50, 100]
         value_format = ".0f"
         suffix = "/100"
     return {
         "range": value_range,
         "color": color,
         "state": state,
+        "steps": steps,
+        "tickvals": tick_values,
         "valueformat": value_format,
         "suffix": suffix,
     }
@@ -745,13 +778,15 @@ def build_postprime_stock_card_figure(
     )
     figure.update_yaxes(
         title_text="株価",
-        tickfont={"size": 11},
+        tickfont={"size": 14, "weight": 600},
+        title_font={"size": 15, "weight": 700},
         row=1,
         col=1,
     )
     figure.update_yaxes(
         title_text="出来高",
-        tickfont={"size": 10},
+        tickfont={"size": 13, "weight": 600},
+        title_font={"size": 14, "weight": 700},
         row=4,
         col=1,
     )
@@ -761,7 +796,7 @@ def build_postprime_stock_card_figure(
         col=1,
     )
     figure.update_xaxes(
-        tickfont={"size": 10},
+        tickfont={"size": 13, "weight": 600},
         row=4,
         col=1,
     )
@@ -783,8 +818,9 @@ def build_postprime_stock_card_figure(
                     "text": name,
                     "font": {
                         "family": CHART_FONT_FAMILY,
-                        "size": 17,
+                        "size": 21,
                         "color": "#17243A",
+                        "weight": 700,
                     },
                 },
                 number={
@@ -792,20 +828,37 @@ def build_postprime_stock_card_figure(
                     "suffix": str(style["suffix"]),
                     "font": {
                         "family": CHART_FONT_FAMILY,
-                        "size": 30,
+                        "size": 34,
                         "color": "#17243A",
+                        "weight": 600,
                     },
                 },
                 gauge={
                     "axis": {
                         "range": style["range"],
+                        "tickvals": style["tickvals"],
                         "tickwidth": 1,
                         "tickcolor": "#98A2B3",
+                        "tickfont": {
+                            "family": CHART_FONT_FAMILY,
+                            "size": 13,
+                            "color": "#667085",
+                        },
                     },
                     "bar": {
-                        "color": style["color"],
-                        "thickness": 0.28,
+                        "color": "rgba(0,0,0,0)",
+                        "thickness": 0.12,
                     },
+                    "steps": style["steps"],
+                    "threshold": (
+                        {
+                            "value": value,
+                            "line": {"color": style["color"], "width": 5},
+                            "thickness": 0.82,
+                        }
+                        if value is not None
+                        else {}
+                    ),
                     "bgcolor": "#E9EEF5",
                     "borderwidth": 0,
                 },
@@ -854,7 +907,11 @@ def build_postprime_stock_card_figure(
             "orientation": "h",
             "x": 0.02,
             "y": 0.805,
-            "font": {"size": 14, "weight": 600},
+            "font": {
+                "size": 16,
+                "weight": 700,
+                "family": CHART_FONT_FAMILY,
+            },
         },
         bargap=0.18,
     )
@@ -885,13 +942,31 @@ def build_postprime_stock_card_figure(
         else None
     )
     range_label = f"{range_value:.1f}%" if range_value is not None else "N/A"
+    range_track_left = 0.055
+    range_track_right = 0.345
     range_x = (
-        0.055 + 0.29 * float(np.clip(range_value, 0, 100)) / 100
+        range_track_left
+        + (range_track_right - range_track_left)
+        * float(np.clip(range_value, 0, 100))
+        / 100
         if range_value is not None
-        else 0.055
+        else range_track_left
     )
     buy_label = f"{buy_confidence}%" if buy_confidence is not None else "N/A"
     sell_label = f"{sell_confidence}%" if sell_confidence is not None else "N/A"
+    buy_value = (
+        float(np.clip(buy_confidence, 0, 100))
+        if buy_confidence is not None
+        else None
+    )
+    buy_track_left = 0.41
+    buy_track_right = 0.69
+    buy_x = (
+        buy_track_left
+        + (buy_track_right - buy_track_left) * buy_value / 100
+        if buy_value is not None
+        else buy_track_left
+    )
     rank_label = f"Rank {rank}" if rank else "Rank N/A"
     figure.update_layout(
         shapes=[
@@ -901,7 +976,7 @@ def build_postprime_stock_card_figure(
                 "yref": "paper",
                 "x0": 0.04,
                 "x1": 0.96,
-                "y0": 0.85,
+                "y0": 0.84,
                 "y1": 0.955,
                 "line": {"color": "#D8E0EA", "width": 1},
                 "fillcolor": "#F7F9FC",
@@ -912,7 +987,7 @@ def build_postprime_stock_card_figure(
                 "xref": "paper",
                 "yref": "paper",
                 "x0": 0.055,
-                "x1": 0.345,
+                "x1": range_track_right,
                 "y0": 0.875,
                 "y1": 0.875,
                 "line": {"color": "#D8E0EA", "width": 8},
@@ -926,7 +1001,32 @@ def build_postprime_stock_card_figure(
                 "y0": 0.875,
                 "y1": 0.875,
                 "line": {
-                    "color": "#16A085" if range_value is not None else "#98A2B3",
+                    "color": (
+                        "#16A085" if range_value is not None else "#98A2B3"
+                    ),
+                    "width": 8,
+                },
+            },
+            {
+                "type": "line",
+                "xref": "paper",
+                "yref": "paper",
+                "x0": buy_track_left,
+                "x1": buy_track_right,
+                "y0": 0.875,
+                "y1": 0.875,
+                "line": {"color": "#D8E0EA", "width": 8},
+            },
+            {
+                "type": "line",
+                "xref": "paper",
+                "yref": "paper",
+                "x0": buy_track_left,
+                "x1": buy_x,
+                "y0": 0.875,
+                "y1": 0.875,
+                "line": {
+                    "color": "#16A085" if buy_value is not None else "#98A2B3",
                     "width": 8,
                 },
             },
@@ -936,7 +1036,7 @@ def build_postprime_stock_card_figure(
                 "yref": "paper",
                 "x0": 0.39,
                 "x1": 0.39,
-                "y0": 0.865,
+                "y0": 0.855,
                 "y1": 0.94,
                 "line": {"color": "#D8E0EA", "width": 1},
             },
@@ -946,7 +1046,7 @@ def build_postprime_stock_card_figure(
                 "yref": "paper",
                 "x0": 0.72,
                 "x1": 0.72,
-                "y0": 0.865,
+                "y0": 0.855,
                 "y1": 0.94,
                 "line": {"color": "#D8E0EA", "width": 1},
             },
@@ -960,7 +1060,12 @@ def build_postprime_stock_card_figure(
                 "y": 0.93,
                 "xanchor": "left",
                 "showarrow": False,
-                "font": {"size": 17, "color": "#475467", "weight": 600},
+                "font": {
+                    "size": 20,
+                    "color": "#475467",
+                    "weight": 700,
+                    "family": CHART_FONT_FAMILY,
+                },
             },
             {
                 "text": range_label,
@@ -970,21 +1075,56 @@ def build_postprime_stock_card_figure(
                 "y": 0.93,
                 "xanchor": "right",
                 "showarrow": False,
-                "font": {"size": 23, "color": "#17243A", "weight": 700},
+                "font": {
+                    "size": 25,
+                    "color": "#17243A",
+                    "weight": 700,
+                    "family": CHART_FONT_FAMILY,
+                },
             },
             {
-                "text": f"買い確度　{buy_label}　/　売り確度　{sell_label}",
+                "text": "買い確度",
                 "xref": "paper",
                 "yref": "paper",
-                "x": 0.555,
-                "y": 0.905,
-                "xanchor": "center",
+                "x": buy_track_left,
+                "y": 0.93,
+                "xanchor": "left",
                 "showarrow": False,
                 "font": {
                     "size": 20,
+                    "color": "#475467",
+                    "family": CHART_FONT_FAMILY,
+                    "weight": 700,
+                },
+            },
+            {
+                "text": buy_label,
+                "xref": "paper",
+                "yref": "paper",
+                "x": buy_track_right,
+                "y": 0.93,
+                "xanchor": "right",
+                "showarrow": False,
+                "font": {
+                    "size": 25,
                     "color": "#17243A",
                     "family": CHART_FONT_FAMILY,
                     "weight": 700,
+                },
+            },
+            {
+                "text": f"売り確度 {sell_label}（独立スコア）",
+                "xref": "paper",
+                "yref": "paper",
+                "x": 0.55,
+                "y": 0.845,
+                "xanchor": "center",
+                "showarrow": False,
+                "font": {
+                    "size": 15,
+                    "color": "#475467",
+                    "family": CHART_FONT_FAMILY,
+                    "weight": 600,
                 },
             },
             {
@@ -996,10 +1136,10 @@ def build_postprime_stock_card_figure(
                 "xanchor": "left",
                 "showarrow": False,
                 "font": {
-                    "size": 17,
+                    "size": 20,
                     "color": "#475467",
                     "family": CHART_FONT_FAMILY,
-                    "weight": 600,
+                    "weight": 700,
                 },
             },
             {
@@ -1011,7 +1151,7 @@ def build_postprime_stock_card_figure(
                 "xanchor": "right",
                 "showarrow": False,
                 "font": {
-                    "size": 23,
+                    "size": 25,
                     "color": "#17243A",
                     "family": CHART_FONT_FAMILY,
                     "weight": 700,
@@ -1027,7 +1167,7 @@ def build_postprime_stock_card_figure(
                     "showarrow": False,
                     "font": {
                         "family": CHART_FONT_FAMILY,
-                        "size": 16,
+                        "size": 20,
                         "color": str(
                             _stock_card_gauge_style(name, latest_values[name])[
                                 "color"
