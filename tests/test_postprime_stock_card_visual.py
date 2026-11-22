@@ -344,19 +344,19 @@ def test_stock_card_fear_greed_flag_requires_history():
     _assert_gauge_flag("Fear & Greed", indicators, None)
 
 
-def test_stock_card_flags_fit_between_values_and_state_labels():
+def test_stock_card_combines_centered_values_and_status_labels_on_one_line():
     indicators = _make_gauge_flag_frame()
     indicators.iloc[-2:, indicators.columns.get_loc("MACD")] = [-0.1, 0.1]
     indicators.iloc[-2:, indicators.columns.get_loc("MACD_Signal")] = [0, 0]
     indicators.iloc[-4:, indicators.columns.get_loc("RSI")] = [49, 51, 52, 53]
     indicators.iloc[-1, indicators.columns.get_loc("Is_Ranging")] = True
     indicators.iloc[-6:, indicators.columns.get_loc("Fear_Greed_Score")] = [
-        50,
-        50,
-        50,
-        50,
-        50,
-        30,
+        80,
+        80,
+        80,
+        80,
+        80,
+        20,
     ]
 
     figure = build_postprime_stock_card_figure(
@@ -370,33 +370,29 @@ def test_stock_card_flags_fit_between_values_and_state_labels():
     )
     annotations = figure.layout.annotations
     expected = {
-        "GC点灯": (0.73, 0.57, 0.625, 0.515),
-        "50上抜け": (0.91, 0.57, 0.625, 0.515),
-        "レンジ警戒": (0.73, 0.22, 0.275, 0.165),
-        "急冷え込み": (0.91, 0.22, 0.275, 0.165),
+        "転換付近 · GC点灯": (0.73, 0.525, 0.625, "0.1"),
+        "中立域 · 50上抜け": (0.91, 0.525, 0.625, "53.0"),
+        "レンジ気味 · レンジ警戒": (0.73, 0.175, 0.275, "15.0"),
+        "極度の恐怖 · 急冷え込み": (0.91, 0.175, 0.275, "20"),
     }
-    for flag, (center_x, flag_y, value_y, state_y) in expected.items():
-        flag_annotation = next(item for item in annotations if item.text == flag)
+    for label, (center_x, label_y, value_y, value_text) in expected.items():
+        label_annotation = next(item for item in annotations if item.text == label)
         value_annotation = next(
             item
             for item in annotations
             if np.isclose(item.x, center_x)
             and np.isclose(item.y, value_y)
-            and item.text not in expected
+            and item.text == value_text
         )
-        state_annotation = next(
-            item
-            for item in annotations
-            if np.isclose(item.x, center_x)
-            and np.isclose(item.y, state_y)
-        )
-        assert np.isclose(flag_annotation.x, center_x)
-        assert np.isclose(flag_annotation.y, flag_y)
-        assert 0.55 <= flag_annotation.font.size / value_annotation.font.size <= 0.65
-        assert flag_annotation.font.color == "#334155"
-        assert flag_annotation.font.weight == 700
-        assert flag_annotation.y < value_annotation.y
-        assert flag_annotation.y > state_annotation.y
+        assert np.isclose(label_annotation.x, center_x)
+        assert np.isclose(label_annotation.y, label_y)
+        assert label_annotation.xanchor == "center"
+        assert label_annotation.font.size < value_annotation.font.size
+        assert 18 <= label_annotation.font.size <= 21
+        assert len(label) * label_annotation.font.size <= 0.16 * 1600
+        assert label_annotation.font.color == "#1E293B"
+        assert label_annotation.font.weight == 700
+        assert label_annotation.y < value_annotation.y
 
 
 def test_stock_card_does_not_render_empty_flag_placeholders():
@@ -411,7 +407,7 @@ def test_stock_card_does_not_render_empty_flag_placeholders():
         rank="A",
     )
 
-    assert not {
+    flag_labels = {
         "GC点灯",
         "DC点灯",
         "ゼロ上抜",
@@ -428,4 +424,8 @@ def test_stock_card_does_not_render_empty_flag_placeholders():
         "急過熱",
         "底打ち反転",
         "過熱一服",
-    } & {annotation.text for annotation in figure.layout.annotations}
+    }
+    texts = {annotation.text for annotation in figure.layout.annotations}
+    assert not flag_labels & texts
+    assert not any(" · " in text for text in texts)
+    assert not any("該当なし" in text for text in texts)

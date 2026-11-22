@@ -1129,7 +1129,7 @@ if rows:
             "Is_Ranging",
             "Fear_Greed_Score",
         ]
-    ]
+    ].tail(252)
     stock_card_signature = hashlib.sha256(
         (
             stock_card_data.to_json(orient="split", date_format="iso")

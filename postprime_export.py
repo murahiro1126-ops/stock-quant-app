@@ -565,7 +565,7 @@ def _stock_card_gauge_flag(
     def numeric_column(column: str) -> pd.Series | None:
         if column not in indicators:
             return None
-        values = pd.to_numeric(indicators[column], errors="coerce")
+        values = pd.to_numeric(indicators[column].tail(30), errors="coerce")
         return values.replace([np.inf, -np.inf], np.nan)
 
     def latest_value(values: pd.Series | None) -> float | None:
@@ -900,7 +900,6 @@ def _stock_card_gauge_visuals(
     value: float | None,
     style: Mapping[str, object],
     domain: tuple[list[float], list[float]],
-    flag: str | None = None,
 ) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
     """Create the colored gauge arcs, ticks, and labels for one stock-card meter."""
     x_domain, y_domain = domain
@@ -1049,8 +1048,6 @@ def _stock_card_gauge_visuals(
         if is_macd
         else 38
     )
-    if flag is not None:
-        value_font_size = max(value_font_size, 18)
     annotations.extend(
         [
             {
@@ -1087,25 +1084,6 @@ def _stock_card_gauge_visuals(
             },
         ]
     )
-    if flag is not None:
-        annotations.append(
-            {
-                "text": flag,
-                "xref": "paper",
-                "yref": "paper",
-                "x": center_x,
-                "y": baseline_y - 0.055,
-                "showarrow": False,
-                "xanchor": "center",
-                "yanchor": "middle",
-                "font": {
-                    "family": CHART_FONT_FAMILY,
-                    "size": round(value_font_size * 0.6),
-                    "color": "#334155",
-                    "weight": 700,
-                },
-            }
-        )
     return shapes, annotations
 
 
@@ -1299,6 +1277,13 @@ def build_postprime_stock_card_figure(
         name: _stock_card_gauge_flag(name, indicators)
         for name, _, _ in gauge_positions
     }
+    gauge_status_labels: dict[str, tuple[str, int]] = {}
+    for name, _, _ in gauge_positions:
+        state = str(_stock_card_gauge_style(name, latest_values[name])["state"])
+        flag = gauge_flags[name]
+        text = f"{state} · {flag}" if flag is not None else state
+        font_size = max(18, min(21, round(21 * 9 / max(9, len(text)))))
+        gauge_status_labels[name] = (text, font_size)
     for trace in figure.data:
         if trace.type != "indicator":
             continue
@@ -1583,16 +1568,16 @@ def build_postprime_stock_card_figure(
             },
             *[
                 {
-                    "text": str(_stock_card_gauge_style(name, latest_values[name])["state"]),
+                    "text": gauge_status_labels[name][0],
                     "xref": "paper",
                     "yref": "paper",
                     "x": sum(gauge_domains[name][0]) / 2,
-                    "y": gauge_domains[name][1][0]
-                    + (-0.005 if gauge_flags[name] is not None else 0.005),
+                    "y": gauge_domains[name][1][0] + 0.005,
+                    "xanchor": "center",
                     "showarrow": False,
                     "font": {
                         "family": CHART_FONT_FAMILY,
-                        "size": 21,
+                        "size": gauge_status_labels[name][1],
                         "color": "#1E293B",
                         "weight": 700,
                     },
@@ -1609,7 +1594,6 @@ def build_postprime_stock_card_figure(
             latest_values[name],
             _stock_card_gauge_style(name, latest_values[name]),
             gauge_domains[name],
-            flag=gauge_flags[name],
         )
         visual_shapes.extend(shapes)
         visual_annotations.extend(annotations)

@@ -414,8 +414,19 @@ def test_postprime_stock_card_displays_latest_values_and_renders_16_by_9(
     assert {
         annotation.text
         for annotation in figure.layout.annotations
-        if annotation.text in {"マイナス圏", "中立域", "トレンド発生", "貪欲"}
-    } == {"マイナス圏", "中立域", "トレンド発生", "貪欲"}
+        if annotation.text
+        in {
+            "マイナス圏",
+            "中立域 · 50上抜け",
+            "トレンド発生 · 発生初動",
+            "貪欲 · 急過熱",
+        }
+    } == {
+        "マイナス圏",
+        "中立域 · 50上抜け",
+        "トレンド発生 · 発生初動",
+        "貪欲 · 急過熱",
+    }
 
 
 def test_compose_plotly_png_stacks_named_chart_images(monkeypatch):
