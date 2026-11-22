@@ -584,9 +584,21 @@ def _stock_card_gauge_style(
             {"range": [-neutral_limit, neutral_limit], "color": "#FCE8C7"},
             {"range": [neutral_limit, radius], "color": "#D6F1E8"},
         ]
+        arc_zones = [
+            (-radius, -neutral_limit, "#2563EB", "#DBEAFE"),
+            (-neutral_limit, neutral_limit, "#475569", "#E2E8F0"),
+            (neutral_limit, radius, "#16A34A", "#DCFCE7"),
+        ]
         tick_values = [-radius, 0, radius]
         value_format = ".2f"
         suffix = ""
+        state_color = (
+            "#16A34A"
+            if value is not None and value > neutral_limit
+            else "#2563EB"
+            if value is not None and value < -neutral_limit
+            else "#475569"
+        )
     elif name == "RSI":
         color = (
             "#E74C3C"
@@ -612,9 +624,21 @@ def _stock_card_gauge_style(
             {"range": [30, 70], "color": "#E5EBF2"},
             {"range": [70, 100], "color": "#F8D8D5"},
         ]
+        arc_zones = [
+            (0, 30, "#2563EB", "#DBEAFE"),
+            (30, 70, "#64748B", "#E2E8F0"),
+            (70, 100, "#DC2626", "#FEE2E2"),
+        ]
         tick_values = [0, 50, 100]
         value_format = ".1f"
         suffix = ""
+        state_color = (
+            "#DC2626"
+            if value is not None and value >= 70
+            else "#2563EB"
+            if value is not None and value <= 30
+            else "#64748B"
+        )
     elif name == "ADX":
         color = (
             "#16A085"
@@ -638,9 +662,21 @@ def _stock_card_gauge_style(
             {"range": [20, 40], "color": "#FCE8C7"},
             {"range": [40, 100], "color": "#D6F1E8"},
         ]
+        arc_zones = [
+            (0, 20, "#64748B", "#E2E8F0"),
+            (20, 40, "#D97706", "#FEF3C7"),
+            (40, 100, "#059669", "#D1FAE5"),
+        ]
         tick_values = [0, 20, 40, 100]
         value_format = ".1f"
         suffix = ""
+        state_color = (
+            "#059669"
+            if value is not None and value >= 40
+            else "#D97706"
+            if value is not None and value >= 20
+            else "#64748B"
+        )
     else:
         color = "#D9534F" if value is not None and value < 25 else (
             "#E67E22"
@@ -674,18 +710,221 @@ def _stock_card_gauge_style(
             {"range": [56, 75], "color": "#D6F1E8"},
             {"range": [75, 100], "color": "#E9DDF7"},
         ]
+        arc_zones = [
+            (0, 25, "#DC2626", "#FEE2E2"),
+            (25, 45, "#EA580C", "#FFEDD5"),
+            (45, 56, "#64748B", "#E2E8F0"),
+            (56, 75, "#16A34A", "#DCFCE7"),
+            (75, 100, "#7C3AED", "#EDE9FE"),
+        ]
         tick_values = [0, 50, 100]
         value_format = ".0f"
         suffix = "/100"
+        state_color = (
+            "#98A2B3"
+            if value is None
+            else "#DC2626"
+            if value is not None and value < 25
+            else "#EA580C"
+            if value is not None and value < 45
+            else "#64748B"
+            if value is not None and value <= 55
+            else "#16A34A"
+            if value is not None and value < 75
+            else "#7C3AED"
+        )
     return {
         "range": value_range,
         "color": color,
         "state": state,
         "steps": steps,
+        "arc_zones": arc_zones,
+        "state_color": state_color,
         "tickvals": tick_values,
         "valueformat": value_format,
         "suffix": suffix,
     }
+
+
+def _stock_card_gauge_visuals(
+    name: str,
+    value: float | None,
+    style: Mapping[str, object],
+    domain: tuple[list[float], list[float]],
+) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
+    """Create the colored gauge arcs, ticks, and labels for one stock-card meter."""
+    x_domain, y_domain = domain
+    center_x = sum(x_domain) / 2
+    baseline_y = y_domain[0] + 0.105
+    radius_x = 0.053
+    radius_y = 0.1
+    is_macd = name == "MACD"
+    zones = style["arc_zones"]
+    if not isinstance(zones, list):
+        raise TypeError("ゲージの色ゾーン設定が不正です。")
+
+    def angle_for(raw_value: float) -> float:
+        if is_macd:
+            macd_range = style["range"]
+            if not isinstance(macd_range, list):
+                raise TypeError("MACDゲージの範囲設定が不正です。")
+            radius = float(macd_range[1])
+            return np.pi / 2 - raw_value / radius * np.pi / 2
+        return np.pi * (1 - raw_value / 100)
+
+    shapes: list[dict[str, object]] = []
+    annotations: list[dict[str, object]] = []
+
+    def add_arc(start_value: float, end_value: float, color: str, width: int) -> None:
+        start_angle, end_angle = sorted(
+            (angle_for(start_value), angle_for(end_value))
+        )
+        angles = np.linspace(start_angle, end_angle, 25)
+        points = [
+            (
+                center_x + radius_x * float(np.cos(angle)),
+                baseline_y + radius_y * float(np.sin(angle)),
+            )
+            for angle in angles
+        ]
+        path = "M " + " L ".join(f"{x:.6f},{y:.6f}" for x, y in points)
+        shapes.append(
+            {
+                "type": "path",
+                "xref": "paper",
+                "yref": "paper",
+                "path": path,
+                "line": {"color": color, "width": width},
+                "layer": "above",
+            }
+        )
+        cap_rx = width / (2 * POSTPRIME_STOCK_CARD_WIDTH)
+        cap_ry = width / (2 * POSTPRIME_STOCK_CARD_HEIGHT)
+        for x, y in (points[0], points[-1]):
+            shapes.append(
+                {
+                    "type": "circle",
+                    "xref": "paper",
+                    "yref": "paper",
+                    "x0": x - cap_rx,
+                    "x1": x + cap_rx,
+                    "y0": y - cap_ry,
+                    "y1": y + cap_ry,
+                    "line": {"width": 0},
+                    "fillcolor": color,
+                    "layer": "above",
+                }
+            )
+
+    for zone in zones:
+        low, high, active_color, track_color = zone
+        low_value = float(low)
+        high_value = float(high)
+        if high_value <= low_value:
+            continue
+        add_arc(low_value, high_value, str(track_color), 8)
+
+        if value is None:
+            continue
+        if is_macd:
+            progress_low, progress_high = sorted((0.0, float(value)))
+        else:
+            progress_low, progress_high = 0.0, float(np.clip(value, 0, 100))
+        segment_low = max(low_value, progress_low)
+        segment_high = min(high_value, progress_high)
+        if segment_high <= segment_low:
+            continue
+        add_arc(segment_low, segment_high, str(active_color), 9)
+
+    tick_values = style["tickvals"]
+    if not isinstance(tick_values, list):
+        raise TypeError("ゲージの目盛り設定が不正です。")
+    for tick in tick_values:
+        tick_value = float(tick)
+        angle = angle_for(tick_value)
+        inner_x = center_x + radius_x * float(np.cos(angle))
+        inner_y = baseline_y + radius_y * float(np.sin(angle))
+        outer_x = center_x + (radius_x + 0.004) * float(np.cos(angle))
+        outer_y = baseline_y + (radius_y + 0.004) * float(np.sin(angle))
+        shapes.append(
+            {
+                "type": "line",
+                "xref": "paper",
+                "yref": "paper",
+                "x0": inner_x,
+                "y0": inner_y,
+                "x1": outer_x,
+                "y1": outer_y,
+                "line": {"color": "#64748B", "width": 1.5},
+                "layer": "above",
+            }
+        )
+        tick_label = f"{tick_value:.3g}" if is_macd else f"{tick_value:g}"
+        annotations.append(
+            {
+                "text": tick_label,
+                "xref": "paper",
+                "yref": "paper",
+                "x": inner_x,
+                "y": baseline_y - 0.03,
+                "showarrow": False,
+                "xanchor": "center",
+                "yanchor": "middle",
+                "font": {
+                    "family": CHART_FONT_FAMILY,
+                    "size": 13,
+                    "color": "#475467",
+                    "weight": 600,
+                },
+            }
+        )
+
+    display_value = (
+        "N/A"
+        if value is None
+        else f"{value:.3g}"
+        if is_macd
+        else f"{value:.1f}"
+        if name in {"RSI", "ADX"}
+        else f"{value:.0f}{style['suffix']}"
+    )
+    annotations.extend(
+        [
+            {
+                "text": name,
+                "xref": "paper",
+                "yref": "paper",
+                "x": center_x,
+                "y": y_domain[1] - 0.012,
+                "showarrow": False,
+                "xanchor": "center",
+                "yanchor": "top",
+                "font": {
+                    "family": CHART_FONT_FAMILY,
+                    "size": 23,
+                    "color": "#17243A",
+                    "weight": 700,
+                },
+            },
+            {
+                "text": display_value,
+                "xref": "paper",
+                "yref": "paper",
+                "x": center_x,
+                "y": baseline_y + 0.035,
+                "showarrow": False,
+                "xanchor": "center",
+                "yanchor": "middle",
+                "font": {
+                    "family": CHART_FONT_FAMILY,
+                    "size": 38,
+                    "color": "#17243A",
+                    "weight": 700,
+                },
+            },
+        ]
+    )
+    return shapes, annotations
 
 
 def build_postprime_stock_card_figure(
@@ -778,15 +1017,15 @@ def build_postprime_stock_card_figure(
     )
     figure.update_yaxes(
         title_text="株価",
-        tickfont={"size": 14, "weight": 600},
-        title_font={"size": 15, "weight": 700},
+        tickfont={"size": 16, "weight": 700},
+        title_font={"size": 17, "weight": 700},
         row=1,
         col=1,
     )
     figure.update_yaxes(
         title_text="出来高",
-        tickfont={"size": 13, "weight": 600},
-        title_font={"size": 14, "weight": 700},
+        tickfont={"size": 15, "weight": 700},
+        title_font={"size": 16, "weight": 700},
         row=4,
         col=1,
     )
@@ -796,7 +1035,7 @@ def build_postprime_stock_card_figure(
         col=1,
     )
     figure.update_xaxes(
-        tickfont={"size": 13, "weight": 600},
+        tickfont={"size": 15, "weight": 700},
         row=4,
         col=1,
     )
@@ -818,7 +1057,7 @@ def build_postprime_stock_card_figure(
                     "text": name,
                     "font": {
                         "family": CHART_FONT_FAMILY,
-                        "size": 21,
+                        "size": 23,
                         "color": "#17243A",
                         "weight": 700,
                     },
@@ -828,9 +1067,9 @@ def build_postprime_stock_card_figure(
                     "suffix": str(style["suffix"]),
                     "font": {
                         "family": CHART_FONT_FAMILY,
-                        "size": 34,
+                        "size": 38,
                         "color": "#17243A",
-                        "weight": 600,
+                        "weight": 700,
                     },
                 },
                 gauge={
@@ -841,7 +1080,7 @@ def build_postprime_stock_card_figure(
                         "tickcolor": "#98A2B3",
                         "tickfont": {
                             "family": CHART_FONT_FAMILY,
-                            "size": 13,
+                            "size": 11 if name == "MACD" else 13,
                             "color": "#667085",
                         },
                     },
@@ -853,8 +1092,8 @@ def build_postprime_stock_card_figure(
                     "threshold": (
                         {
                             "value": value,
-                            "line": {"color": style["color"], "width": 5},
-                            "thickness": 0.82,
+                            "line": {"color": style["color"], "width": 0},
+                            "thickness": 0,
                         }
                         if value is not None
                         else {}
@@ -863,6 +1102,7 @@ def build_postprime_stock_card_figure(
                     "borderwidth": 0,
                 },
                 meta={"status": style["state"]},
+                visible=False,
             ),
             row=row,
             col=column,
@@ -1001,9 +1241,7 @@ def build_postprime_stock_card_figure(
                 "y0": 0.875,
                 "y1": 0.875,
                 "line": {
-                    "color": (
-                        "#16A085" if range_value is not None else "#98A2B3"
-                    ),
+                    "color": "#1E293B",
                     "width": 8,
                 },
             },
@@ -1026,7 +1264,7 @@ def build_postprime_stock_card_figure(
                 "y0": 0.875,
                 "y1": 0.875,
                 "line": {
-                    "color": "#16A085" if buy_value is not None else "#98A2B3",
+                    "color": "#1E293B",
                     "width": 8,
                 },
             },
@@ -1061,7 +1299,7 @@ def build_postprime_stock_card_figure(
                 "xanchor": "left",
                 "showarrow": False,
                 "font": {
-                    "size": 20,
+                    "size": 22,
                     "color": "#475467",
                     "weight": 700,
                     "family": CHART_FONT_FAMILY,
@@ -1076,7 +1314,7 @@ def build_postprime_stock_card_figure(
                 "xanchor": "right",
                 "showarrow": False,
                 "font": {
-                    "size": 25,
+                    "size": 28,
                     "color": "#17243A",
                     "weight": 700,
                     "family": CHART_FONT_FAMILY,
@@ -1117,11 +1355,11 @@ def build_postprime_stock_card_figure(
                 "xref": "paper",
                 "yref": "paper",
                 "x": 0.55,
-                "y": 0.845,
+                "y": 0.85,
                 "xanchor": "center",
                 "showarrow": False,
                 "font": {
-                    "size": 15,
+                    "size": 17,
                     "color": "#475467",
                     "family": CHART_FONT_FAMILY,
                     "weight": 600,
@@ -1136,7 +1374,7 @@ def build_postprime_stock_card_figure(
                 "xanchor": "left",
                 "showarrow": False,
                 "font": {
-                    "size": 20,
+                    "size": 22,
                     "color": "#475467",
                     "family": CHART_FONT_FAMILY,
                     "weight": 700,
@@ -1151,7 +1389,7 @@ def build_postprime_stock_card_figure(
                 "xanchor": "right",
                 "showarrow": False,
                 "font": {
-                    "size": 25,
+                    "size": 28,
                     "color": "#17243A",
                     "family": CHART_FONT_FAMILY,
                     "weight": 700,
@@ -1167,18 +1405,31 @@ def build_postprime_stock_card_figure(
                     "showarrow": False,
                     "font": {
                         "family": CHART_FONT_FAMILY,
-                        "size": 20,
-                        "color": str(
-                            _stock_card_gauge_style(name, latest_values[name])[
-                                "color"
-                            ]
-                        ),
+                        "size": 21,
+                        "color": str(_stock_card_gauge_style(
+                            name, latest_values[name]
+                        )["state_color"]),
                         "weight": 700,
                     },
                 }
                 for name, _, _ in gauge_positions
             ],
         ],
+    )
+    visual_shapes: list[dict[str, object]] = []
+    visual_annotations: list[dict[str, object]] = []
+    for name, _, _ in gauge_positions:
+        shapes, annotations = _stock_card_gauge_visuals(
+            name,
+            latest_values[name],
+            _stock_card_gauge_style(name, latest_values[name]),
+            gauge_domains[name],
+        )
+        visual_shapes.extend(shapes)
+        visual_annotations.extend(annotations)
+    figure.update_layout(
+        shapes=[*figure.layout.shapes, *visual_shapes],
+        annotations=[*figure.layout.annotations, *visual_annotations],
     )
     return figure
 
