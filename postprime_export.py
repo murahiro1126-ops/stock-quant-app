@@ -554,6 +554,174 @@ def extract_latest_stock_card_values(
     return values
 
 
+def _stock_card_gauge_flag(
+    name: str,
+    indicators: pd.DataFrame,
+) -> str | None:
+    """Return the highest-priority recent event label for one gauge."""
+    if not isinstance(indicators, pd.DataFrame) or indicators.empty:
+        return None
+
+    def numeric_column(column: str) -> pd.Series | None:
+        if column not in indicators:
+            return None
+        values = pd.to_numeric(indicators[column], errors="coerce")
+        return values.replace([np.inf, -np.inf], np.nan)
+
+    def latest_value(values: pd.Series | None) -> float | None:
+        if values is None or values.empty or pd.isna(values.iloc[-1]):
+            return None
+        return float(values.iloc[-1])
+
+    def crossed(
+        values: pd.Series,
+        threshold: float,
+        upward: bool,
+        sessions: int = 3,
+    ) -> bool:
+        recent = values.tail(sessions + 1)
+        previous = recent.shift(1)
+        event = (
+            (previous <= threshold) & (recent > threshold)
+            if upward
+            else (previous >= threshold) & (recent < threshold)
+        )
+        return bool(event.iloc[1:].fillna(False).any())
+
+    def crossed_between(
+        values: pd.Series,
+        previous_limit: float,
+        current_limit: float,
+        upward: bool,
+        sessions: int = 3,
+    ) -> bool:
+        recent = values.tail(sessions + 1)
+        previous = recent.shift(1)
+        event = (
+            (previous <= previous_limit) & (recent >= current_limit)
+            if upward
+            else (previous >= previous_limit) & (recent <= current_limit)
+        )
+        return bool(event.iloc[1:].fillna(False).any())
+
+    if name == "MACD":
+        macd = numeric_column("MACD")
+        signal = numeric_column("MACD_Signal")
+        if macd is None or signal is None:
+            return None
+        relative = macd - signal
+        if crossed(relative, 0, upward=True):
+            return "GC点灯"
+        if crossed(relative, 0, upward=False):
+            return "DC点灯"
+        if crossed(macd, 0, upward=True):
+            return "ゼロ上抜"
+        if crossed(macd, 0, upward=False):
+            return "ゼロ下抜"
+        return None
+
+    if name == "RSI":
+        rsi = numeric_column("RSI")
+        if rsi is None:
+            return None
+        current_rsi = latest_value(rsi)
+        close = numeric_column("Close")
+        if current_rsi is not None and close is not None:
+            history = pd.concat(
+                {"close": close, "rsi": rsi},
+                axis=1,
+            ).dropna().tail(30)
+            if len(history) == 30:
+                previous_window = history.iloc[:15]
+                recent_window = history.iloc[15:]
+                previous_low = int(previous_window["close"].to_numpy().argmin())
+                recent_low = int(recent_window["close"].to_numpy().argmin())
+                if (
+                    current_rsi < 40
+                    and recent_window["close"].iloc[recent_low]
+                    < previous_window["close"].iloc[previous_low]
+                    and recent_window["rsi"].iloc[recent_low]
+                    > previous_window["rsi"].iloc[previous_low]
+                ):
+                    return "強気逆行"
+                previous_high = int(previous_window["close"].to_numpy().argmax())
+                recent_high = int(recent_window["close"].to_numpy().argmax())
+                if (
+                    current_rsi > 60
+                    and recent_window["close"].iloc[recent_high]
+                    > previous_window["close"].iloc[previous_high]
+                    and recent_window["rsi"].iloc[recent_high]
+                    < previous_window["rsi"].iloc[previous_high]
+                ):
+                    return "弱気逆行"
+        if crossed(rsi, 50, upward=True):
+            return "50上抜け"
+        if crossed(rsi, 50, upward=False):
+            return "50割れ"
+        return None
+
+    if name == "ADX":
+        adx = numeric_column("ADX")
+        if adx is None:
+            return None
+        current_adx = latest_value(adx)
+        atr_percent = latest_value(numeric_column("ATR_Percent"))
+        ranging = (
+            indicators["Is_Ranging"].iloc[-1]
+            if "Is_Ranging" in indicators
+            else False
+        )
+        if (
+            pd.notna(ranging)
+            and bool(ranging)
+            and current_adx is not None
+            and current_adx < 20
+            and atr_percent is not None
+            and atr_percent < 1.5
+        ):
+            return "レンジ警戒"
+        if crossed(adx, 20, upward=True):
+            return "発生初動"
+        recent = adx.tail(4)
+        changes = recent.diff().iloc[1:]
+        if (
+            len(changes) == 3
+            and not changes.isna().any()
+            and current_adx is not None
+            and current_adx >= 25
+            and (changes > 0).all()
+        ):
+            return "勢い加速"
+        if (
+            len(changes) == 3
+            and not changes.isna().any()
+            and current_adx is not None
+            and current_adx >= 30
+            and (changes < 0).all()
+        ):
+            return "勢い一服"
+        return None
+
+    if name == "Fear & Greed":
+        score = numeric_column("Fear_Greed_Score")
+        if score is None:
+            return None
+        current_score = latest_value(score)
+        if current_score is None:
+            return None
+        if len(score) >= 6 and pd.notna(score.iloc[-6]):
+            change = current_score - float(score.iloc[-6])
+            if change <= -15:
+                return "急冷え込み"
+            if change >= 15:
+                return "急過熱"
+        if crossed_between(score, 24, 25, upward=True):
+            return "底打ち反転"
+        if crossed_between(score, 75, 74, upward=False):
+            return "過熱一服"
+    return None
+
+
 def _stock_card_gauge_style(
     name: str,
     value: float | None,
@@ -732,6 +900,7 @@ def _stock_card_gauge_visuals(
     value: float | None,
     style: Mapping[str, object],
     domain: tuple[list[float], list[float]],
+    flag: str | None = None,
 ) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
     """Create the colored gauge arcs, ticks, and labels for one stock-card meter."""
     x_domain, y_domain = domain
@@ -780,30 +949,15 @@ def _stock_card_gauge_visuals(
             }
         )
 
-    neutral_macd_track: tuple[float, float, str] | None = None
     for zone in zones:
         low, high, active_color, track_color = zone
         low_value = float(low)
         high_value = float(high)
         if high_value <= low_value:
             continue
-        if is_macd:
-            if low_value < 0 < high_value:
-                if value == 0:
-                    neutral_macd_track = (
-                        low_value,
-                        high_value,
-                        str(track_color),
-                    )
-                continue
-            if high_value <= 0:
-                high_value = 0.0
-            elif low_value >= 0:
-                low_value = 0.0
+        if is_macd and low_value < 0 < high_value and value != 0:
+            continue
         add_arc(low_value, high_value, str(track_color), 28)
-    if neutral_macd_track is not None:
-        neutral_low, neutral_high, neutral_color = neutral_macd_track
-        add_arc(neutral_low, neutral_high, neutral_color, 28)
 
     if value is not None:
         if is_macd:
@@ -895,6 +1049,8 @@ def _stock_card_gauge_visuals(
         if is_macd
         else 38
     )
+    if flag is not None:
+        value_font_size = max(value_font_size, 18)
     annotations.extend(
         [
             {
@@ -931,6 +1087,25 @@ def _stock_card_gauge_visuals(
             },
         ]
     )
+    if flag is not None:
+        annotations.append(
+            {
+                "text": flag,
+                "xref": "paper",
+                "yref": "paper",
+                "x": center_x,
+                "y": baseline_y - 0.055,
+                "showarrow": False,
+                "xanchor": "center",
+                "yanchor": "middle",
+                "font": {
+                    "family": CHART_FONT_FAMILY,
+                    "size": round(value_font_size * 0.6),
+                    "color": "#334155",
+                    "weight": 700,
+                },
+            }
+        )
     return shapes, annotations
 
 
@@ -1119,6 +1294,10 @@ def build_postprime_stock_card_figure(
         "RSI": ([0.83, 0.99], [0.52, 0.77]),
         "ADX": ([0.65, 0.81], [0.17, 0.42]),
         "Fear & Greed": ([0.83, 0.99], [0.17, 0.42]),
+    }
+    gauge_flags = {
+        name: _stock_card_gauge_flag(name, indicators)
+        for name, _, _ in gauge_positions
     }
     for trace in figure.data:
         if trace.type != "indicator":
@@ -1408,7 +1587,8 @@ def build_postprime_stock_card_figure(
                     "xref": "paper",
                     "yref": "paper",
                     "x": sum(gauge_domains[name][0]) / 2,
-                    "y": gauge_domains[name][1][0] + 0.005,
+                    "y": gauge_domains[name][1][0]
+                    + (-0.005 if gauge_flags[name] is not None else 0.005),
                     "showarrow": False,
                     "font": {
                         "family": CHART_FONT_FAMILY,
@@ -1429,6 +1609,7 @@ def build_postprime_stock_card_figure(
             latest_values[name],
             _stock_card_gauge_style(name, latest_values[name]),
             gauge_domains[name],
+            flag=gauge_flags[name],
         )
         visual_shapes.extend(shapes)
         visual_annotations.extend(annotations)

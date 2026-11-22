@@ -1122,8 +1122,11 @@ if rows:
             "SMA_75",
             "SMA_200",
             "MACD",
+            "MACD_Signal",
             "RSI",
             "ADX",
+            "ATR_Percent",
+            "Is_Ranging",
             "Fear_Greed_Score",
         ]
     ]
