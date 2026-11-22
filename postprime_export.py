@@ -780,15 +780,30 @@ def _stock_card_gauge_visuals(
             }
         )
 
+    neutral_macd_track: tuple[float, float, str] | None = None
     for zone in zones:
         low, high, active_color, track_color = zone
         low_value = float(low)
         high_value = float(high)
         if high_value <= low_value:
             continue
-        if is_macd and low_value < 0 < high_value and value != 0:
-            continue
+        if is_macd:
+            if low_value < 0 < high_value:
+                if value == 0:
+                    neutral_macd_track = (
+                        low_value,
+                        high_value,
+                        str(track_color),
+                    )
+                continue
+            if high_value <= 0:
+                high_value = 0.0
+            elif low_value >= 0:
+                low_value = 0.0
         add_arc(low_value, high_value, str(track_color), 28)
+    if neutral_macd_track is not None:
+        neutral_low, neutral_high, neutral_color = neutral_macd_track
+        add_arc(neutral_low, neutral_high, neutral_color, 28)
 
     if value is not None:
         if is_macd:

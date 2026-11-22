@@ -175,12 +175,29 @@ def test_stock_card_fear_greed_ticks_and_colors_match_its_zone_boundaries():
 
 
 @pytest.mark.parametrize("value", [-0.0001, 0.0001])
-def test_macd_nonzero_value_omits_neutral_gray_track(value):
+def test_macd_background_tracks_reach_zero_without_nonzero_neutral_track(value):
     style = _stock_card_gauge_style("MACD", value)
     shapes, _ = _stock_card_gauge_visuals(
         "MACD", value, style, ([0.15, 0.33], [0.65, 0.92])
     )
 
+    colored_tracks = [
+        shape
+        for shape in shapes
+        if shape["type"] == "path"
+        and shape["line"]["width"] == 28
+        and shape["line"]["color"] in {"#DBEAFE", "#DCFCE7"}
+    ]
+    zero_point = (0.24, 0.855)
+    assert len(colored_tracks) == 2
+    for track in colored_tracks:
+        points = [
+            tuple(float(coordinate) for coordinate in point.split(","))
+            for point in track["path"].replace("M ", "", 1).split(" L ")
+        ]
+        assert any(
+            np.allclose(point, zero_point, rtol=0, atol=1e-6) for point in points
+        )
     assert not any(
         shape["type"] == "path" and shape["line"]["color"] == "#E2E8F0"
         for shape in shapes
