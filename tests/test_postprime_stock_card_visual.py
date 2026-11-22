@@ -51,18 +51,24 @@ def test_stock_card_uses_dark_summary_bars_and_round_zoned_gauge_arcs():
         for shape in figure.layout.shapes
         if shape.type == "path"
         and shape.line.color == "#475569"
-        and shape.line.width == 9
+        and shape.line.width == 11
     )
     assert " L " in tiny_macd_arc.path
     arc_start_x = float(tiny_macd_arc.path.split()[1].split(",")[0])
     arc_end_x = float(tiny_macd_arc.path.split()[-1].split(",")[0])
     assert not np.isclose(arc_start_x, arc_end_x, rtol=0, atol=1e-7)
+    assert any(
+        shape.type == "path" and shape.line.width == 6
+        for shape in figure.layout.shapes
+    )
     assert all(
         trace.visible is False for trace in figure.data if trace.type == "indicator"
     )
 
     annotations = {annotation.text: annotation for annotation in figure.layout.annotations}
-    assert annotations["売り確度 18%（独立スコア）"].y == 0.85
+    assert annotations["売り確度 18%（独立スコア）"].y == 0.855
     assert annotations["MACD"].font.size >= 23
+    assert annotations["MACD"].y >= 0.8
+    assert annotations["20"].y > annotations["0"].y
     assert annotations["買い確度"].font.size == 20
     assert annotations["72%"].font.size == 25

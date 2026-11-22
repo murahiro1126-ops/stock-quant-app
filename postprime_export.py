@@ -822,7 +822,7 @@ def _stock_card_gauge_visuals(
         high_value = float(high)
         if high_value <= low_value:
             continue
-        add_arc(low_value, high_value, str(track_color), 8)
+        add_arc(low_value, high_value, str(track_color), 6)
 
         if value is None:
             continue
@@ -834,7 +834,7 @@ def _stock_card_gauge_visuals(
         segment_high = min(high_value, progress_high)
         if segment_high <= segment_low:
             continue
-        add_arc(segment_low, segment_high, str(active_color), 9)
+        add_arc(segment_low, segment_high, str(active_color), 11)
 
     tick_values = style["tickvals"]
     if not isinstance(tick_values, list):
@@ -842,8 +842,10 @@ def _stock_card_gauge_visuals(
     for tick in tick_values:
         tick_value = float(tick)
         angle = angle_for(tick_value)
-        inner_x = center_x + radius_x * float(np.cos(angle))
-        inner_y = baseline_y + radius_y * float(np.sin(angle))
+        cos_angle = float(np.cos(angle))
+        sin_angle = float(np.sin(angle))
+        inner_x = center_x + radius_x * cos_angle
+        inner_y = baseline_y + radius_y * sin_angle
         outer_x = center_x + (radius_x + 0.004) * float(np.cos(angle))
         outer_y = baseline_y + (radius_y + 0.004) * float(np.sin(angle))
         shapes.append(
@@ -860,16 +862,24 @@ def _stock_card_gauge_visuals(
             }
         )
         tick_label = f"{tick_value:.3g}" if is_macd else f"{tick_value:g}"
+        label_x = center_x + (radius_x + 0.01) * cos_angle
+        label_y = baseline_y + (radius_y + 0.014) * sin_angle
+        if abs(cos_angle) > 0.85:
+            label_xanchor = "right" if cos_angle < 0 else "left"
+            label_yanchor = "middle"
+        else:
+            label_xanchor = "center"
+            label_yanchor = "bottom"
         annotations.append(
             {
                 "text": tick_label,
                 "xref": "paper",
                 "yref": "paper",
-                "x": inner_x,
-                "y": baseline_y - 0.03,
+                "x": label_x,
+                "y": label_y,
                 "showarrow": False,
-                "xanchor": "center",
-                "yanchor": "middle",
+                "xanchor": label_xanchor,
+                "yanchor": label_yanchor,
                 "font": {
                     "family": CHART_FONT_FAMILY,
                     "size": 13,
@@ -895,7 +905,7 @@ def _stock_card_gauge_visuals(
                 "xref": "paper",
                 "yref": "paper",
                 "x": center_x,
-                "y": y_domain[1] - 0.012,
+                "y": y_domain[1] + 0.035,
                 "showarrow": False,
                 "xanchor": "center",
                 "yanchor": "top",
@@ -1216,7 +1226,7 @@ def build_postprime_stock_card_figure(
                 "yref": "paper",
                 "x0": 0.04,
                 "x1": 0.96,
-                "y0": 0.84,
+                "y0": 0.825,
                 "y1": 0.955,
                 "line": {"color": "#D8E0EA", "width": 1},
                 "fillcolor": "#F7F9FC",
@@ -1355,7 +1365,7 @@ def build_postprime_stock_card_figure(
                 "xref": "paper",
                 "yref": "paper",
                 "x": 0.55,
-                "y": 0.85,
+                "y": 0.855,
                 "xanchor": "center",
                 "showarrow": False,
                 "font": {
