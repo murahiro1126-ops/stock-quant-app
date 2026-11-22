@@ -58,9 +58,20 @@ def test_stock_card_uses_dark_summary_bars_and_round_zoned_gauge_arcs():
     arc_end_x = float(tiny_macd_arc.path.split()[-1].split(",")[0])
     assert not np.isclose(arc_start_x, arc_end_x, rtol=0, atol=1e-7)
     assert any(
-        shape.type == "path" and shape.line.width == 18
+        shape.type == "path" and shape.line.width == 28
         for shape in figure.layout.shapes
     )
+    track_index = next(
+        index
+        for index, shape in enumerate(figure.layout.shapes)
+        if shape.type == "path" and shape.line.width == 28
+    )
+    active_index = next(
+        index
+        for index, shape in enumerate(figure.layout.shapes)
+        if shape.type == "path" and shape.line.width == 9
+    )
+    assert track_index < active_index
     assert all(
         trace.visible is False for trace in figure.data if trace.type == "indicator"
     )
@@ -71,8 +82,19 @@ def test_stock_card_uses_dark_summary_bars_and_round_zoned_gauge_arcs():
     assert annotations["MACD"].y >= 0.8
     assert annotations["20"].y > annotations["0"].y
     assert annotations["1e-4"].font.size < 38
+    assert np.isclose(annotations["1e-4"].y, 0.625)
     assert {"30", "70", "25", "45", "55", "75", "100"}.issubset(annotations)
     assert "56" not in annotations
+    fear_tick_marks = [
+        shape
+        for shape in figure.layout.shapes
+        if shape.type == "line"
+        and 0.83 < shape.x0 < 0.99
+        and 0.83 < shape.x1 < 0.99
+        and 0.17 < shape.y0 < 0.42
+        and 0.17 < shape.y1 < 0.42
+    ]
+    assert len(fear_tick_marks) == 6
     assert annotations["80"].text == "80"
     adx_right_tick = next(
         annotation

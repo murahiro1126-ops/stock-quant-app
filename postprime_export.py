@@ -822,7 +822,7 @@ def _stock_card_gauge_visuals(
         high_value = float(high)
         if high_value <= low_value:
             continue
-        add_arc(low_value, high_value, str(track_color), 18)
+        add_arc(low_value, high_value, str(track_color), 28)
 
     if value is not None:
         if is_macd:
@@ -849,8 +849,6 @@ def _stock_card_gauge_visuals(
         angle = angle_for(tick_value)
         cos_angle = float(np.cos(angle))
         sin_angle = float(np.sin(angle))
-        inner_x = center_x + radius_x * cos_angle
-        inner_y = baseline_y + radius_y * sin_angle
         tick_inner_x = center_x + (radius_x + 0.006) * cos_angle
         tick_inner_y = baseline_y + (radius_y + 0.006) * sin_angle
         tick_outer_x = center_x + (radius_x + 0.012) * cos_angle
@@ -936,7 +934,7 @@ def _stock_card_gauge_visuals(
                 "xref": "paper",
                 "yref": "paper",
                 "x": center_x,
-                "y": baseline_y + 0.035,
+                "y": baseline_y,
                 "showarrow": False,
                 "xanchor": "center",
                 "yanchor": "middle",
