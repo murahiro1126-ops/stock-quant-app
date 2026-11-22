@@ -629,7 +629,7 @@ def _stock_card_gauge_style(
             (30, 70, "#64748B", "#E2E8F0"),
             (70, 100, "#DC2626", "#FEE2E2"),
         ]
-        tick_values = [0, 50, 100]
+        tick_values = [0, 30, 70, 100]
         value_format = ".1f"
         suffix = ""
         state_color = (
@@ -717,7 +717,7 @@ def _stock_card_gauge_style(
             (56, 75, "#16A34A", "#DCFCE7"),
             (75, 100, "#7C3AED", "#EDE9FE"),
         ]
-        tick_values = [0, 50, 100]
+        tick_values = [0, 25, 45, 56, 75, 100]
         value_format = ".0f"
         suffix = "/100"
         state_color = (
@@ -822,19 +822,24 @@ def _stock_card_gauge_visuals(
         high_value = float(high)
         if high_value <= low_value:
             continue
-        add_arc(low_value, high_value, str(track_color), 6)
+        add_arc(low_value, high_value, str(track_color), 14)
 
-        if value is None:
-            continue
+    if value is not None:
         if is_macd:
             progress_low, progress_high = sorted((0.0, float(value)))
         else:
             progress_low, progress_high = 0.0, float(np.clip(value, 0, 100))
-        segment_low = max(low_value, progress_low)
-        segment_high = min(high_value, progress_high)
-        if segment_high <= segment_low:
-            continue
-        add_arc(segment_low, segment_high, str(active_color), 11)
+        for zone in zones:
+            low, high, active_color, _ = zone
+            low_value = float(low)
+            high_value = float(high)
+            if high_value <= low_value:
+                continue
+            segment_low = max(low_value, progress_low)
+            segment_high = min(high_value, progress_high)
+            if segment_high <= segment_low:
+                continue
+            add_arc(segment_low, segment_high, str(active_color), 9)
 
     tick_values = style["tickvals"]
     if not isinstance(tick_values, list):
@@ -846,24 +851,26 @@ def _stock_card_gauge_visuals(
         sin_angle = float(np.sin(angle))
         inner_x = center_x + radius_x * cos_angle
         inner_y = baseline_y + radius_y * sin_angle
-        outer_x = center_x + (radius_x + 0.004) * float(np.cos(angle))
-        outer_y = baseline_y + (radius_y + 0.004) * float(np.sin(angle))
+        tick_inner_x = center_x + (radius_x + 0.006) * cos_angle
+        tick_inner_y = baseline_y + (radius_y + 0.006) * sin_angle
+        tick_outer_x = center_x + (radius_x + 0.012) * cos_angle
+        tick_outer_y = baseline_y + (radius_y + 0.012) * sin_angle
         shapes.append(
             {
                 "type": "line",
                 "xref": "paper",
                 "yref": "paper",
-                "x0": inner_x,
-                "y0": inner_y,
-                "x1": outer_x,
-                "y1": outer_y,
+                "x0": tick_inner_x,
+                "y0": tick_inner_y,
+                "x1": tick_outer_x,
+                "y1": tick_outer_y,
                 "line": {"color": "#64748B", "width": 1.5},
                 "layer": "above",
             }
         )
         tick_label = f"{tick_value:.3g}" if is_macd else f"{tick_value:g}"
-        label_x = center_x + (radius_x + 0.01) * cos_angle
-        label_y = baseline_y + (radius_y + 0.014) * sin_angle
+        label_x = center_x + (radius_x + 0.025) * cos_angle
+        label_y = baseline_y + (radius_y + 0.025) * sin_angle
         if abs(cos_angle) > 0.85:
             label_xanchor = "right" if cos_angle < 0 else "left"
             label_yanchor = "middle"
@@ -896,7 +903,7 @@ def _stock_card_gauge_visuals(
         if is_macd
         else f"{value:.1f}"
         if name in {"RSI", "ADX"}
-        else f"{value:.0f}{style['suffix']}"
+        else f"{value:.0f}"
     )
     annotations.extend(
         [
@@ -1416,9 +1423,7 @@ def build_postprime_stock_card_figure(
                     "font": {
                         "family": CHART_FONT_FAMILY,
                         "size": 21,
-                        "color": str(_stock_card_gauge_style(
-                            name, latest_values[name]
-                        )["state_color"]),
+                        "color": "#1E293B",
                         "weight": 700,
                     },
                 }
