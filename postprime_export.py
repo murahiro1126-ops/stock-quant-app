@@ -713,11 +713,11 @@ def _stock_card_gauge_style(
         arc_zones = [
             (0, 25, "#DC2626", "#FEE2E2"),
             (25, 45, "#EA580C", "#FFEDD5"),
-            (45, 56, "#64748B", "#E2E8F0"),
-            (56, 75, "#16A34A", "#DCFCE7"),
+            (45, 55, "#64748B", "#E2E8F0"),
+            (55, 75, "#16A34A", "#DCFCE7"),
             (75, 100, "#7C3AED", "#EDE9FE"),
         ]
-        tick_values = [0, 25, 45, 56, 75, 100]
+        tick_values = [0, 25, 45, 55, 75, 100]
         value_format = ".0f"
         suffix = "/100"
         state_color = (
@@ -822,7 +822,7 @@ def _stock_card_gauge_visuals(
         high_value = float(high)
         if high_value <= low_value:
             continue
-        add_arc(low_value, high_value, str(track_color), 14)
+        add_arc(low_value, high_value, str(track_color), 18)
 
     if value is not None:
         if is_macd:
@@ -869,8 +869,9 @@ def _stock_card_gauge_visuals(
             }
         )
         tick_label = f"{tick_value:.3g}" if is_macd else f"{tick_value:g}"
-        label_x = center_x + (radius_x + 0.025) * cos_angle
-        label_y = baseline_y + (radius_y + 0.025) * sin_angle
+        label_radius_offset = 0.013 if abs(cos_angle) > 0.85 else 0.025
+        label_x = center_x + (radius_x + label_radius_offset) * cos_angle
+        label_y = baseline_y + (radius_y + label_radius_offset) * sin_angle
         if abs(cos_angle) > 0.85:
             label_xanchor = "right" if cos_angle < 0 else "left"
             label_yanchor = "middle"
@@ -896,14 +897,21 @@ def _stock_card_gauge_visuals(
             }
         )
 
-    display_value = (
-        "N/A"
-        if value is None
-        else f"{value:.3g}"
+    if value is None:
+        display_value = "N/A"
+    elif is_macd:
+        display_value = f"{value:.3g}"
+        if len(display_value) > 5 or "e" in display_value.lower():
+            mantissa, exponent = f"{value:.2e}".split("e")
+            display_value = f"{mantissa.rstrip('0').rstrip('.')}e{int(exponent)}"
+    elif name in {"RSI", "ADX"}:
+        display_value = f"{value:.1f}"
+    else:
+        display_value = f"{value:.0f}"
+    value_font_size = (
+        max(12, int(38 * 3 / len(display_value)))
         if is_macd
-        else f"{value:.1f}"
-        if name in {"RSI", "ADX"}
-        else f"{value:.0f}"
+        else 38
     )
     annotations.extend(
         [
@@ -934,7 +942,7 @@ def _stock_card_gauge_visuals(
                 "yanchor": "middle",
                 "font": {
                     "family": CHART_FONT_FAMILY,
-                    "size": 38,
+                    "size": value_font_size,
                     "color": "#17243A",
                     "weight": 700,
                 },

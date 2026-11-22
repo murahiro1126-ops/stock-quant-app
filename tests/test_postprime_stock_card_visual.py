@@ -58,7 +58,7 @@ def test_stock_card_uses_dark_summary_bars_and_round_zoned_gauge_arcs():
     arc_end_x = float(tiny_macd_arc.path.split()[-1].split(",")[0])
     assert not np.isclose(arc_start_x, arc_end_x, rtol=0, atol=1e-7)
     assert any(
-        shape.type == "path" and shape.line.width == 14
+        shape.type == "path" and shape.line.width == 18
         for shape in figure.layout.shapes
     )
     assert all(
@@ -70,8 +70,25 @@ def test_stock_card_uses_dark_summary_bars_and_round_zoned_gauge_arcs():
     assert annotations["MACD"].font.size >= 23
     assert annotations["MACD"].y >= 0.8
     assert annotations["20"].y > annotations["0"].y
-    assert {"30", "70", "25", "45", "56", "75", "100"}.issubset(annotations)
+    assert annotations["1e-4"].font.size < 38
+    assert {"30", "70", "25", "45", "55", "75", "100"}.issubset(annotations)
+    assert "56" not in annotations
     assert annotations["80"].text == "80"
+    adx_right_tick = next(
+        annotation
+        for annotation in figure.layout.annotations
+        if annotation.text == "100"
+        and annotation.x < 0.83
+        and annotation.y < 0.4
+    )
+    fear_left_tick = next(
+        annotation
+        for annotation in figure.layout.annotations
+        if annotation.text == "0"
+        and 0.83 < annotation.x < 0.92
+        and annotation.y < 0.4
+    )
+    assert fear_left_tick.x - adx_right_tick.x >= 0.04
     assert {
         annotations[state].font.color
         for state in {"転換付近", "売られ過ぎ", "非常に強い", "極度の熱狂"}
