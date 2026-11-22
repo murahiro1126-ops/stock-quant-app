@@ -678,61 +678,42 @@ def _stock_card_gauge_style(
             else "#64748B"
         )
     else:
-        color = "#D9534F" if value is not None and value < 25 else (
-            "#E67E22"
-            if value is not None and value < 45
-            else "#98A2B3"
-            if value is not None and value <= 55
-            else "#16A085"
-            if value is not None and value < 75
-            else "#7B4AB5"
+        rounded_score = (
+            int(np.clip(np.floor(value + 0.5), 0, 100))
             if value is not None
-            else "#98A2B3"
+            else None
         )
-        state = (
-            "極度の恐怖"
-            if value is not None and value < 25
-            else "恐怖"
-            if value is not None and value < 45
-            else "中立"
-            if value is not None and value <= 55
-            else "貪欲"
-            if value is not None and value < 75
-            else "極度の熱狂"
-            if value is not None
-            else "取得不可"
-        )
+        if rounded_score is None:
+            color, state = "#98A2B3", "取得不可"
+        elif rounded_score <= 20:
+            color, state = "#DC2626", "極度の恐怖"
+        elif rounded_score <= 40:
+            color, state = "#D97706", "恐怖"
+        elif rounded_score <= 60:
+            color, state = "#64748B", "中立"
+        elif rounded_score <= 80:
+            color, state = "#16A34A", "貪欲"
+        else:
+            color, state = "#C2410C", "極度の熱狂"
         value_range = [0, 100]
         steps = [
-            {"range": [0, 25], "color": "#F8D8D5"},
-            {"range": [25, 45], "color": "#FCE8C7"},
-            {"range": [45, 56], "color": "#E5EBF2"},
-            {"range": [56, 75], "color": "#D6F1E8"},
-            {"range": [75, 100], "color": "#E9DDF7"},
+            {"range": [0, 20], "color": "#FEE2E2"},
+            {"range": [20, 40], "color": "#FEF3C7"},
+            {"range": [40, 60], "color": "#E2E8F0"},
+            {"range": [60, 80], "color": "#DCFCE7"},
+            {"range": [80, 100], "color": "#FFEDD5"},
         ]
         arc_zones = [
-            (0, 25, "#DC2626", "#FEE2E2"),
-            (25, 45, "#EA580C", "#FFEDD5"),
-            (45, 55, "#64748B", "#E2E8F0"),
-            (55, 75, "#16A34A", "#DCFCE7"),
-            (75, 100, "#7C3AED", "#EDE9FE"),
+            (0, 20, "#DC2626", "#FEE2E2"),
+            (20, 40, "#D97706", "#FEF3C7"),
+            (40, 60, "#64748B", "#E2E8F0"),
+            (60, 80, "#16A34A", "#DCFCE7"),
+            (80, 100, "#C2410C", "#FFEDD5"),
         ]
-        tick_values = [0, 25, 45, 55, 75, 100]
+        tick_values = [0, 20, 40, 60, 80, 100]
         value_format = ".0f"
         suffix = "/100"
-        state_color = (
-            "#98A2B3"
-            if value is None
-            else "#DC2626"
-            if value is not None and value < 25
-            else "#EA580C"
-            if value is not None and value < 45
-            else "#64748B"
-            if value is not None and value <= 55
-            else "#16A34A"
-            if value is not None and value < 75
-            else "#7C3AED"
-        )
+        state_color = color
     return {
         "range": value_range,
         "color": color,
@@ -798,29 +779,14 @@ def _stock_card_gauge_visuals(
                 "layer": "above",
             }
         )
-        cap_rx = width / (2 * POSTPRIME_STOCK_CARD_WIDTH)
-        cap_ry = width / (2 * POSTPRIME_STOCK_CARD_HEIGHT)
-        for x, y in (points[0], points[-1]):
-            shapes.append(
-                {
-                    "type": "circle",
-                    "xref": "paper",
-                    "yref": "paper",
-                    "x0": x - cap_rx,
-                    "x1": x + cap_rx,
-                    "y0": y - cap_ry,
-                    "y1": y + cap_ry,
-                    "line": {"width": 0},
-                    "fillcolor": color,
-                    "layer": "above",
-                }
-            )
 
     for zone in zones:
         low, high, active_color, track_color = zone
         low_value = float(low)
         high_value = float(high)
         if high_value <= low_value:
+            continue
+        if is_macd and low_value < 0 < high_value and value != 0:
             continue
         add_arc(low_value, high_value, str(track_color), 28)
 
@@ -839,7 +805,10 @@ def _stock_card_gauge_visuals(
             segment_high = min(high_value, progress_high)
             if segment_high <= segment_low:
                 continue
-            add_arc(segment_low, segment_high, str(active_color), 9)
+            progress_color = str(active_color)
+            if is_macd and low_value < 0 < high_value and value != 0:
+                progress_color = "#16A34A" if value > 0 else "#2563EB"
+            add_arc(segment_low, segment_high, progress_color, 9)
 
     tick_values = style["tickvals"]
     if not isinstance(tick_values, list):

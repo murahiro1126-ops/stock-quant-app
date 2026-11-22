@@ -1,10 +1,15 @@
 import numpy as np
 import pandas as pd
+import pytest
 
-from postprime_export import build_postprime_stock_card_figure
+from postprime_export import (
+    _stock_card_gauge_style,
+    _stock_card_gauge_visuals,
+    build_postprime_stock_card_figure,
+)
 
 
-def test_stock_card_uses_dark_summary_bars_and_round_zoned_gauge_arcs():
+def test_stock_card_uses_dark_summary_bars_and_flat_zoned_gauge_arcs():
     indicators = pd.DataFrame(
         {
             "Close": [100.0],
@@ -50,7 +55,7 @@ def test_stock_card_uses_dark_summary_bars_and_round_zoned_gauge_arcs():
         shape
         for shape in figure.layout.shapes
         if shape.type == "path"
-        and shape.line.color == "#475569"
+        and shape.line.color == "#16A34A"
         and shape.line.width == 9
     )
     assert " L " in tiny_macd_arc.path
@@ -83,8 +88,8 @@ def test_stock_card_uses_dark_summary_bars_and_round_zoned_gauge_arcs():
     assert annotations["20"].y > annotations["0"].y
     assert annotations["1e-4"].font.size < 38
     assert np.isclose(annotations["1e-4"].y, 0.625)
-    assert {"30", "70", "25", "45", "55", "75", "100"}.issubset(annotations)
-    assert "56" not in annotations
+    assert {"30", "70", "20", "40", "60", "80", "100"}.issubset(annotations)
+    assert {"25", "45", "55", "56", "75"}.isdisjoint(annotations)
     fear_tick_marks = [
         shape
         for shape in figure.layout.shapes
@@ -113,7 +118,83 @@ def test_stock_card_uses_dark_summary_bars_and_round_zoned_gauge_arcs():
     assert fear_left_tick.x - adx_right_tick.x >= 0.04
     assert {
         annotations[state].font.color
-        for state in {"転換付近", "売られ過ぎ", "非常に強い", "極度の熱狂"}
+        for state in {"転換付近", "売られ過ぎ", "非常に強い", "貪欲"}
     } == {"#1E293B"}
+    assert all(shape.type != "circle" for shape in figure.layout.shapes)
     assert annotations["買い確度"].font.size == 20
     assert annotations["72%"].font.size == 25
+
+
+@pytest.mark.parametrize(
+    ("score", "expected_state"),
+    [
+        (0, "極度の恐怖"),
+        (20, "極度の恐怖"),
+        (20.5, "恐怖"),
+        (40, "恐怖"),
+        (40.5, "中立"),
+        (60, "中立"),
+        (60.5, "貪欲"),
+        (80, "貪欲"),
+        (80.5, "極度の熱狂"),
+        (100, "極度の熱狂"),
+    ],
+)
+def test_stock_card_fear_greed_zones_match_analyzer_boundaries(
+    score, expected_state
+):
+    assert _stock_card_gauge_style("Fear & Greed", score)["state"] == expected_state
+
+
+def test_stock_card_fear_greed_ticks_and_colors_match_its_zone_boundaries():
+    style = _stock_card_gauge_style("Fear & Greed", 50)
+    zones = style["arc_zones"]
+
+    assert style["tickvals"] == [0, 20, 40, 60, 80, 100]
+    assert [(zone[0], zone[1]) for zone in zones] == [
+        (0, 20),
+        (20, 40),
+        (40, 60),
+        (60, 80),
+        (80, 100),
+    ]
+    assert [zone[2] for zone in zones] == [
+        "#DC2626",
+        "#D97706",
+        "#64748B",
+        "#16A34A",
+        "#C2410C",
+    ]
+    assert [zone[3] for zone in zones] == [
+        "#FEE2E2",
+        "#FEF3C7",
+        "#E2E8F0",
+        "#DCFCE7",
+        "#FFEDD5",
+    ]
+
+
+@pytest.mark.parametrize("value", [-0.0001, 0.0001])
+def test_macd_nonzero_value_omits_neutral_gray_track(value):
+    style = _stock_card_gauge_style("MACD", value)
+    shapes, _ = _stock_card_gauge_visuals(
+        "MACD", value, style, ([0.15, 0.33], [0.65, 0.92])
+    )
+
+    assert not any(
+        shape["type"] == "path" and shape["line"]["color"] == "#E2E8F0"
+        for shape in shapes
+    )
+
+
+def test_macd_zero_value_shows_neutral_gray_track_without_rounded_caps():
+    style = _stock_card_gauge_style("MACD", 0)
+    shapes, _ = _stock_card_gauge_visuals(
+        "MACD", 0, style, ([0.15, 0.33], [0.65, 0.92])
+    )
+
+    assert any(
+        shape["type"] == "path" and shape["line"]["color"] == "#E2E8F0"
+        for shape in shapes
+    )
+    assert all(shape["type"] != "circle" for shape in shapes)

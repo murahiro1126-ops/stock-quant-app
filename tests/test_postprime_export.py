@@ -391,7 +391,7 @@ def test_postprime_stock_card_displays_latest_values_and_renders_16_by_9(
     assert gauges["MACD"].gauge.threshold.line.color == "#E74C3C"
     assert gauges["RSI"].gauge.threshold.line.color == "#16A085"
     assert gauges["ADX"].gauge.threshold.line.color == "#F39C12"
-    assert gauges["Fear & Greed"].gauge.threshold.line.color == "#16A085"
+    assert gauges["Fear & Greed"].gauge.threshold.line.color == "#16A34A"
     assert gauges["MACD"].gauge.steps[0].range == (-1.875, -0.1875)
     assert gauges["MACD"].gauge.steps[1].color == "#FCE8C7"
     assert [step.range for step in gauges["RSI"].gauge.steps] == [
@@ -405,11 +405,11 @@ def test_postprime_stock_card_displays_latest_values_and_renders_16_by_9(
         (40, 100),
     ]
     assert [step.range for step in gauges["Fear & Greed"].gauge.steps] == [
-        (0, 25),
-        (25, 45),
-        (45, 56),
-        (56, 75),
-        (75, 100),
+        (0, 20),
+        (20, 40),
+        (40, 60),
+        (60, 80),
+        (80, 100),
     ]
     assert {
         annotation.text
