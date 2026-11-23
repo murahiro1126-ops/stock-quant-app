@@ -955,6 +955,8 @@ def _stock_card_gauge_visuals(
         if high_value <= low_value:
             continue
         if is_macd and low_value < 0 < high_value and value != 0:
+            add_arc(low_value, 0, "#DBEAFE", 28)
+            add_arc(0, high_value, "#DCFCE7", 28)
             continue
         add_arc(low_value, high_value, str(track_color), 28)
 

@@ -214,6 +214,18 @@ def test_macd_nonzero_value_omits_neutral_gray_track(value):
         shape["type"] == "path" and shape["line"]["color"] == "#E2E8F0"
         for shape in shapes
     )
+    center_x = 0.24
+    zero_y = 0.855
+    for color in ("#DBEAFE", "#DCFCE7"):
+        zero_ending_tracks = [
+            shape
+            for shape in shapes
+            if shape["type"] == "path"
+            and shape["line"]["width"] == 28
+            and shape["line"]["color"] == color
+            and f"{center_x:.6f},{zero_y:.6f}" in shape["path"]
+        ]
+        assert len(zero_ending_tracks) == 1
 
 
 def test_macd_zero_value_shows_neutral_gray_track_without_rounded_caps():
