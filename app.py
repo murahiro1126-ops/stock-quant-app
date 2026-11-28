@@ -123,12 +123,27 @@ if app_mode == APP_MODE_YOUTUBE:
 
             stats = result["stats"]
             emotions = result["emotions"]
+            metrics = result["metrics"]
             st.subheader(result["name"])
             st.caption(f"{result['title']}（{result['published_at']}）")
             c1, c2, c3 = st.columns(3)
             c1.metric("再生数", f"{int(stats.get('viewCount', 0)):,.0f}")
             c2.metric("コメント総数", f"{int(stats.get('commentCount', 0)):,.0f}")
             c3.metric("分類コメント数", result["comment_count"])
+
+            metric_columns = st.columns(3)
+            metric_columns[0].metric(
+                "Net Sentiment",
+                f"{metrics['net_sentiment']:.1f}%",
+            )
+            metric_columns[1].metric(
+                "Friction Index",
+                f"{metrics['friction_index']:.1f}%",
+            )
+            metric_columns[2].metric(
+                "Emotional Density",
+                f"{metrics['emotional_density']:.1f}%",
+            )
 
             emotion_colors = {
                 "Euphoria": "#e45756",
@@ -196,6 +211,9 @@ if app_mode == APP_MODE_YOUTUBE:
             rows.append(
                 {
                     "チャンネル": result["name"],
+                    "Net Sentiment (%)": metrics["net_sentiment"],
+                    "Friction Index (%)": metrics["friction_index"],
+                    "Emotional Density (%)": metrics["emotional_density"],
                     **{key: emotions[key] for key in EMOTION_KEYS},
                 }
             )
@@ -203,6 +221,15 @@ if app_mode == APP_MODE_YOUTUBE:
             st.subheader("チャンネル比較")
             comparison = pd.DataFrame(rows).style
             comparison = comparison.set_properties(
+                subset=["Net Sentiment (%)"],
+                **{"background-color": "#e5f4e3"},
+            ).set_properties(
+                subset=["Friction Index (%)"],
+                **{"background-color": "#fff0dc"},
+            ).set_properties(
+                subset=["Emotional Density (%)"],
+                **{"background-color": "#eee8fa"},
+            ).set_properties(
                 subset=["Euphoria"],
                 **{"background-color": "#fde2e2"},
             ).set_properties(

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -40,6 +41,108 @@ class YouTubeSentimentError(RuntimeError):
     """An expected YouTube, Gemini, or configuration error."""
 
 
+def _is_youtube_data_api_url(url: str) -> bool:
+    parsed_url = urllib.parse.urlsplit(url)
+    return (
+        parsed_url.hostname == "www.googleapis.com"
+        and parsed_url.path.startswith("/youtube/v3/")
+    )
+
+
+def _redact_youtube_api_key(value: str, url: str) -> str:
+    api_keys = [
+        query_value
+        for name, query_value in urllib.parse.parse_qsl(
+            urllib.parse.urlsplit(url).query
+        )
+        if name.lower() == "key"
+    ]
+    for api_key in api_keys:
+        if api_key:
+            for encoded_key in {
+                api_key,
+                urllib.parse.quote(api_key, safe=""),
+                urllib.parse.quote_plus(api_key),
+            }:
+                value = value.replace(encoded_key, "[REDACTED]")
+    return re.sub(
+        r"(?i)([?&]key=)[^&\s\"'<>]+",
+        r"\1[REDACTED]",
+        value,
+    )
+
+
+def _log_youtube_api_error(url: str, status: int, body: bytes) -> None:
+    body_text = body.decode("utf-8", errors="replace")
+    try:
+        response_data = json.loads(body_text)
+    except json.JSONDecodeError:
+        preview = _redact_youtube_api_key(body_text, url)[:500]
+        print(
+            f"YouTube Data API error (HTTP {status}): non-JSON response: {preview}",
+            flush=True,
+        )
+        return
+
+    error = response_data.get("error") if isinstance(response_data, dict) else None
+    if not isinstance(error, dict):
+        error = {}
+    message = error.get("message", "")
+    if not isinstance(message, str):
+        message = str(message)
+    message = _redact_youtube_api_key(message, url)
+
+    raw_errors = error.get("errors", [])
+    details = []
+    if isinstance(raw_errors, list):
+        for raw_detail in raw_errors:
+            if not isinstance(raw_detail, dict):
+                continue
+            detail = {}
+            for field in ("reason", "location", "message"):
+                value = raw_detail.get(field, "")
+                if not isinstance(value, str):
+                    value = str(value)
+                detail[field] = _redact_youtube_api_key(value, url)
+            details.append(detail)
+
+    print(
+        f"YouTube Data API error (HTTP {status}): "
+        f"error.message={message}; "
+        f"error.errors={json.dumps(details, ensure_ascii=False)}",
+        flush=True,
+    )
+
+
+def calculate_sentiment_metrics(emotions: dict[str, Any]) -> dict[str, float | int]:
+    """Calculate normalized sentiment metrics from five emotion counts."""
+    counts = {key: emotions.get(key, 0) for key in EMOTION_KEYS}
+    total = sum(counts.values())
+    if total == 0:
+        return {
+            "net_sentiment": 0.0,
+            "friction_index": 0.0,
+            "emotional_density": 0.0,
+            "total": total,
+        }
+
+    return {
+        "net_sentiment": round(
+            (counts["Euphoria"] - counts["Fear"]) / total * 100,
+            1,
+        ),
+        "friction_index": round(
+            (counts["Mockery"] + counts["Anger"]) / total * 100,
+            1,
+        ),
+        "emotional_density": round(
+            (total - counts["Calm"]) / total * 100,
+            1,
+        ),
+        "total": total,
+    }
+
+
 def fetch_json(
     url: str,
     payload: dict[str, Any] | None = None,
@@ -58,13 +161,34 @@ def fetch_json(
 
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
-            return json.loads(response.read().decode("utf-8"))
+            response_body = response.read()
+            status = response.status
+            if status != 200:
+                if _is_youtube_data_api_url(url):
+                    _log_youtube_api_error(url, status, response_body)
+                raise YouTubeSentimentError(
+                    f"APIリクエストが失敗しました（HTTP {status}）"
+                )
+            try:
+                return json.loads(response_body.decode("utf-8", errors="replace"))
+            except json.JSONDecodeError:
+                if _is_youtube_data_api_url(url):
+                    _log_youtube_api_error(url, status, response_body)
+                raise
     except urllib.error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="replace")[:500]
+        if _is_youtube_data_api_url(url):
+            _log_youtube_api_error(url, exc.code, exc.read())
         raise YouTubeSentimentError(
             f"APIリクエストが失敗しました（HTTP {exc.code}）"
         ) from exc
-    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+    except (urllib.error.URLError, TimeoutError) as exc:
+        if _is_youtube_data_api_url(url):
+            print(
+                f"YouTube Data API request failed ({type(exc).__name__})",
+                flush=True,
+            )
+        raise YouTubeSentimentError("APIへの接続またはレスポンス解析に失敗しました") from exc
+    except json.JSONDecodeError as exc:
         raise YouTubeSentimentError("APIへの接続またはレスポンス解析に失敗しました") from exc
 
 
@@ -334,6 +458,7 @@ def scan_channels(
                     "stats": stats,
                     "comment_count": len(comments),
                     "emotions": emotions,
+                    "metrics": calculate_sentiment_metrics(emotions),
                     "comment_details": emotions.get("comment_details", []),
                 }
             )

@@ -1,8 +1,111 @@
+import io
+import urllib.error
+
+import pytest
+
 from youtube_sentiment import (
+    YouTubeSentimentError,
+    calculate_sentiment_metrics,
     classify_comments_batch,
+    fetch_json,
     get_latest_video,
     get_video_stats_and_comments,
 )
+
+
+def test_calculate_sentiment_metrics():
+    result = calculate_sentiment_metrics(
+        {
+            "Euphoria": 3,
+            "Fear": 1,
+            "Mockery": 2,
+            "Anger": 1,
+            "Calm": 3,
+        }
+    )
+
+    assert result == {
+        "net_sentiment": 20.0,
+        "friction_index": 30.0,
+        "emotional_density": 70.0,
+        "total": 10,
+    }
+
+
+def test_calculate_sentiment_metrics_with_zero_total():
+    result = calculate_sentiment_metrics(
+        {
+            "Euphoria": 0,
+            "Fear": 0,
+            "Mockery": 0,
+            "Anger": 0,
+            "Calm": 0,
+        }
+    )
+
+    assert result == {
+        "net_sentiment": 0.0,
+        "friction_index": 0.0,
+        "emotional_density": 0.0,
+        "total": 0,
+    }
+
+
+def test_fetch_json_logs_youtube_error_details_without_api_key(monkeypatch, capsys):
+    api_key = "private-api-key"
+    response_body = (
+        b'{"error":{"message":"Daily Limit Exceeded",'
+        b'"errors":[{"reason":"quotaExceeded","location":"key",'
+        b'"message":"Request quota exceeded"}]}}'
+    )
+
+    def fake_urlopen(request, timeout):
+        raise urllib.error.HTTPError(
+            request.full_url,
+            403,
+            "Forbidden",
+            {},
+            io.BytesIO(response_body),
+        )
+
+    monkeypatch.setattr("youtube_sentiment.urllib.request.urlopen", fake_urlopen)
+
+    with pytest.raises(YouTubeSentimentError):
+        fetch_json(
+            f"https://www.googleapis.com/youtube/v3/videos?key={api_key}"
+        )
+
+    output = capsys.readouterr().out
+    assert "Daily Limit Exceeded" in output
+    assert "quotaExceeded" in output
+    assert "Request quota exceeded" in output
+    assert api_key not in output
+    assert "key=" not in output
+
+
+def test_fetch_json_logs_first_500_characters_for_non_json_youtube_error(
+    monkeypatch,
+    capsys,
+):
+    response_body = b"x" * 600
+
+    def fake_urlopen(request, timeout):
+        raise urllib.error.HTTPError(
+            request.full_url,
+            502,
+            "Bad Gateway",
+            {},
+            io.BytesIO(response_body),
+        )
+
+    monkeypatch.setattr("youtube_sentiment.urllib.request.urlopen", fake_urlopen)
+
+    with pytest.raises(YouTubeSentimentError):
+        fetch_json("https://www.googleapis.com/youtube/v3/videos?key=test-key")
+
+    output = capsys.readouterr().out
+    assert "non-JSON response: " + "x" * 500 in output
+    assert "x" * 501 not in output
 
 
 def test_get_latest_video(monkeypatch):
