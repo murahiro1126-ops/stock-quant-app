@@ -10,6 +10,14 @@ from typing import Any
 
 from gemini_retry import generate_with_retries
 
+try:
+    from dotenv import load_dotenv
+except ImportError:
+    load_dotenv = None
+
+if load_dotenv is not None:
+    load_dotenv()
+
 LOGGER = logging.getLogger(__name__)
 MODEL = "gemini-3.8-flash"
 
@@ -185,7 +193,7 @@ def _generate_or_fallback(
     data: dict[str, Any],
     fallback: str,
 ) -> str:
-    api_key = get_gemini_api_key() or api_key
+    api_key = api_key or get_gemini_api_key()
     if not api_key or not api_key.strip():
         return fallback
 

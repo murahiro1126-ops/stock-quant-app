@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 
 import numpy as np
 import pandas as pd
@@ -61,9 +62,10 @@ st.set_page_config(page_title="日本株シグナル検証", page_icon="📈", l
 
 APP_MODE_ANALYSIS = "日本株分析ダッシュボード"
 APP_MODE_POSTPRIME = "PostPrimeワンショットモード"
+APP_MODE_YOUTUBE = "YouTubeセンチメントスキャン"
 app_mode = st.sidebar.selectbox(
     "アプリモード",
-    options=(APP_MODE_ANALYSIS, APP_MODE_POSTPRIME),
+    options=(APP_MODE_ANALYSIS, APP_MODE_POSTPRIME, APP_MODE_YOUTUBE),
     key="app-mode",
 )
 if app_mode == APP_MODE_POSTPRIME:
@@ -79,6 +81,135 @@ if app_mode == APP_MODE_POSTPRIME:
         key="postprime-analysis-mode",
     )
     render_postprime_generator(postprime_mode)
+    st.stop()
+if app_mode == APP_MODE_YOUTUBE:
+    import pandas as pd
+
+    from youtube_sentiment import (
+        EMOTION_KEYS,
+        YouTubeSentimentError,
+        scan_channels,
+    )
+
+    st.title("YouTubeセンチメントスキャン")
+    youtube_api_key = os.environ.get("YOUTUBE_API_KEY", "")
+    GEMINI_API_KEY = get_gemini_api_key()
+
+    if not youtube_api_key:
+        st.error("YOUTUBE_API_KEYが設定されていません。.envを確認してください。")
+    if not GEMINI_API_KEY:
+        st.error("GEMINI_API_KEYが設定されていません。.envを確認してください。")
+
+    max_comments = st.slider("コメント取得件数", 10, 100, 30, 10)
+    if st.button("センチメントをスキャン", type="primary", use_container_width=True):
+        if not youtube_api_key or not GEMINI_API_KEY:
+            st.stop()
+        with st.spinner("YouTube動画とコメントを取得し、Geminiで分類中..."):
+            try:
+                results = scan_channels(
+                    youtube_api_key,
+                    GEMINI_API_KEY,
+                    max_comments=max_comments,
+                )
+            except YouTubeSentimentError as exc:
+                st.error(str(exc))
+                st.stop()
+
+        rows = []
+        for result in results:
+            if "error" in result:
+                st.warning(f"{result['name']}: {result['error']}")
+                continue
+
+            stats = result["stats"]
+            emotions = result["emotions"]
+            st.subheader(result["name"])
+            st.caption(f"{result['title']}（{result['published_at']}）")
+            c1, c2, c3 = st.columns(3)
+            c1.metric("再生数", f"{int(stats.get('viewCount', 0)):,.0f}")
+            c2.metric("コメント総数", f"{int(stats.get('commentCount', 0)):,.0f}")
+            c3.metric("分類コメント数", result["comment_count"])
+
+            emotion_colors = {
+                "Euphoria": "#e45756",
+                "Fear": "#4c78a8",
+                "Mockery": "#b279a2",
+                "Anger": "#f58518",
+                "Calm": "#72b7b2",
+            }
+            chart = go.Figure(
+                go.Bar(
+                    x=[emotions[key] for key in EMOTION_KEYS],
+                    y=list(EMOTION_KEYS),
+                    orientation="h",
+                    marker_color=[emotion_colors[key] for key in EMOTION_KEYS],
+                    text=[emotions[key] for key in EMOTION_KEYS],
+                    textposition="auto",
+                )
+            )
+            chart.update_layout(
+                height=260,
+                margin=dict(l=20, r=20, t=10, b=10),
+                xaxis_title="コメント数",
+                yaxis=dict(
+                    categoryorder="array",
+                    categoryarray=list(EMOTION_KEYS),
+                    autorange="reversed",
+                ),
+                showlegend=False,
+            )
+            st.plotly_chart(chart, use_container_width=True)
+
+            with st.expander("💬 コメント分類明細を確認"):
+                comment_details = result.get("comment_details", [])
+                if comment_details:
+                    label_filter = st.selectbox(
+                        "感情ラベルで絞り込む",
+                        options=("すべて", *EMOTION_KEYS),
+                        key=f"comment-label-{result['channel_id']}",
+                    )
+                    detail_rows = [
+                        {
+                            "番号": detail["index"],
+                            "コメント本文": detail["text"],
+                            "判定ラベル": detail["label"],
+                            "判定理由": detail["reason"],
+                        }
+                        for detail in comment_details
+                        if label_filter == "すべて"
+                        or detail["label"] == label_filter
+                    ]
+                    st.dataframe(
+                        pd.DataFrame(detail_rows),
+                        use_container_width=True,
+                        hide_index=True,
+                        column_config={
+                            "番号": st.column_config.NumberColumn(width="small"),
+                            "コメント本文": st.column_config.TextColumn(width="large"),
+                            "判定ラベル": st.column_config.TextColumn(width="small"),
+                            "判定理由": st.column_config.TextColumn(width="medium"),
+                        },
+                    )
+                else:
+                    st.caption("分類可能なコメントはありません。")
+
+            rows.append(
+                {
+                    "チャンネル": result["name"],
+                    **{key: emotions[key] for key in EMOTION_KEYS},
+                }
+            )
+        if rows:
+            st.subheader("チャンネル比較")
+            comparison = pd.DataFrame(rows).style
+            comparison = comparison.set_properties(
+                subset=["Euphoria"],
+                **{"background-color": "#fde2e2"},
+            ).set_properties(
+                subset=["Fear"],
+                **{"background-color": "#e3efff"},
+            )
+            st.dataframe(comparison, use_container_width=True, hide_index=True)
     st.stop()
 
 GEMINI_API_KEY = get_gemini_api_key()

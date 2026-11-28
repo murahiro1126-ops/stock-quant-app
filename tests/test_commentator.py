@@ -54,7 +54,9 @@ def test_get_gemini_api_key_falls_back_to_environment(monkeypatch):
     assert get_gemini_api_key() == "environment-key"
 
 
-def test_generate_ai_comment_uses_fallback_without_api_key():
+def test_generate_ai_comment_uses_fallback_without_api_key(monkeypatch):
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.setattr(commentator, "_read_streamlit_gemini_secret", lambda: None)
     result = generate_ai_comment(**_arguments())
 
     assert "トヨタ自動車（7203.T）" in result
@@ -206,7 +208,9 @@ def test_generate_ai_comment_logs_original_api_error_and_status(monkeypatch, cap
     assert "quota exceeded" in output
 
 
-def test_generate_postprime_text_falls_back_without_api_key():
+def test_generate_postprime_text_falls_back_without_api_key(monkeypatch):
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.setattr(commentator, "_read_streamlit_gemini_secret", lambda: None)
     result = generate_postprime_text(
         **{**_arguments(), "buy_reasons": ["買い条件"], "sell_reasons": []}
     )
