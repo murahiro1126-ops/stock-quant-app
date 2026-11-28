@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import csv
 import json
 import os
 import re
 import urllib.error
 import urllib.parse
 import urllib.request
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any
 
 try:
@@ -35,6 +38,24 @@ CHANNELS = {
 }
 
 EMOTION_KEYS = ("Euphoria", "Fear", "Mockery", "Anger", "Calm")
+JST = timezone(timedelta(hours=9), name="JST")
+HISTORY_PATH = Path(__file__).resolve().parent / "data" / "sentiment_history.csv"
+HISTORY_FIELDS = (
+    "published_at",
+    "published_date",
+    "scanned_at",
+    "channel_key",
+    "channel_name",
+    "video_id",
+    "video_title",
+    "view_count",
+    "comment_total_youtube",
+    "sample_count",
+    *EMOTION_KEYS,
+    "net_sentiment",
+    "friction_index",
+    "emotional_density",
+)
 
 
 class YouTubeSentimentError(RuntimeError):
@@ -141,6 +162,110 @@ def calculate_sentiment_metrics(emotions: dict[str, Any]) -> dict[str, float | i
         ),
         "total": total,
     }
+
+
+def to_jst_published_date(published_at: str) -> str:
+    """Convert a YouTube ISO publication timestamp to a JST calendar date."""
+    parsed = datetime.fromisoformat(published_at.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(JST).date().isoformat()
+
+
+def _parse_scanned_at(value: str) -> datetime:
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=JST)
+    return parsed
+
+
+def _is_at_least_as_recent(candidate: str, current: str) -> bool:
+    if not current:
+        return True
+    return _parse_scanned_at(candidate) >= _parse_scanned_at(current)
+
+
+def save_sentiment_history(
+    records: list[dict[str, Any]],
+    history_path: str | Path | None = None,
+) -> dict[str, int]:
+    """Upsert video-level sentiment records into the local CSV history."""
+    path = Path(history_path) if history_path is not None else HISTORY_PATH
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    records_by_key: dict[tuple[str, str], dict[str, Any]] = {}
+    for record in records:
+        missing_fields = [field for field in HISTORY_FIELDS if field not in record]
+        if missing_fields:
+            raise ValueError(
+                f"履歴レコードに必須フィールドがありません: {', '.join(missing_fields)}"
+            )
+        history_record = {field: record[field] for field in HISTORY_FIELDS}
+        key = (
+            str(history_record["channel_key"] or ""),
+            str(history_record["video_id"] or ""),
+        )
+        if not all(key):
+            raise ValueError("履歴レコードには channel_key と video_id が必要です")
+        if not str(history_record["scanned_at"] or ""):
+            raise ValueError("履歴レコードには scanned_at が必要です")
+        previous = records_by_key.get(key)
+        if previous is None or _is_at_least_as_recent(
+            str(history_record["scanned_at"]),
+            str(previous["scanned_at"]),
+        ):
+            records_by_key[key] = history_record
+
+    existing_by_key: dict[tuple[str, str], dict[str, Any]] = {}
+    if path.exists():
+        with path.open("r", newline="", encoding="utf-8") as history_file:
+            for row in csv.DictReader(history_file):
+                history_record = {
+                    field: row.get(field, "") or "" for field in HISTORY_FIELDS
+                }
+                key = (
+                    str(history_record["channel_key"] or ""),
+                    str(history_record["video_id"] or ""),
+                )
+                if not all(key):
+                    raise ValueError("履歴CSVに channel_key または video_id がありません")
+                if not str(history_record["scanned_at"] or ""):
+                    raise ValueError("履歴CSVに scanned_at がありません")
+                previous = existing_by_key.get(key)
+                if previous is None or _is_at_least_as_recent(
+                    str(history_record["scanned_at"]),
+                    str(previous["scanned_at"]),
+                ):
+                    existing_by_key[key] = history_record
+
+    added = 0
+    updated = 0
+    for key, record in records_by_key.items():
+        existing = existing_by_key.get(key)
+        if existing is None:
+            added += 1
+            existing_by_key[key] = record
+        elif _is_at_least_as_recent(
+            str(record["scanned_at"]),
+            str(existing["scanned_at"]),
+        ):
+            updated += 1
+            existing_by_key[key] = record
+
+    sorted_records = sorted(
+        existing_by_key.values(),
+        key=lambda record: (
+            str(record["published_date"]),
+            str(record["channel_key"]),
+            str(record["video_id"]),
+        ),
+    )
+    with path.open("w", newline="", encoding="utf-8") as history_file:
+        writer = csv.DictWriter(history_file, fieldnames=HISTORY_FIELDS)
+        writer.writeheader()
+        writer.writerows(sorted_records)
+
+    return {"added": added, "updated": updated, "total": len(sorted_records)}
 
 
 def fetch_json(
@@ -428,7 +553,8 @@ def scan_channels(
         raise YouTubeSentimentError("YOUTUBE_API_KEYが設定されていません")
 
     results = []
-    for info in CHANNELS.values():
+    scanned_at = datetime.now(JST).isoformat(timespec="seconds")
+    for channel_key, info in CHANNELS.items():
         try:
             video = get_latest_video(info["channel_id"], youtube_api_key)
             if not video:
@@ -451,14 +577,29 @@ def scan_channels(
                 comments,
                 gemini_api_key,
             )
+            metrics = calculate_sentiment_metrics(emotions)
+            view_count = int(stats.get("viewCount") or 0)
+            comment_total_youtube = int(stats.get("commentCount") or 0)
             results.append(
                 {
                     **info,
                     **video,
+                    "published_date": to_jst_published_date(video["published_at"]),
+                    "scanned_at": scanned_at,
+                    "channel_key": channel_key,
+                    "channel_name": info["name"],
+                    "video_title": video["title"],
+                    "view_count": view_count,
+                    "comment_total_youtube": comment_total_youtube,
+                    "sample_count": int(metrics["total"]),
+                    **{key: int(emotions[key]) for key in EMOTION_KEYS},
+                    "net_sentiment": float(metrics["net_sentiment"]),
+                    "friction_index": float(metrics["friction_index"]),
+                    "emotional_density": float(metrics["emotional_density"]),
                     "stats": stats,
                     "comment_count": len(comments),
                     "emotions": emotions,
-                    "metrics": calculate_sentiment_metrics(emotions),
+                    "metrics": metrics,
                     "comment_details": emotions.get("comment_details", []),
                 }
             )

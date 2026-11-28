@@ -88,6 +88,7 @@ if app_mode == APP_MODE_YOUTUBE:
     from youtube_sentiment import (
         EMOTION_KEYS,
         YouTubeSentimentError,
+        save_sentiment_history,
         scan_channels,
     )
 
@@ -114,6 +115,19 @@ if app_mode == APP_MODE_YOUTUBE:
             except YouTubeSentimentError as exc:
                 st.error(str(exc))
                 st.stop()
+
+        history_records = [result for result in results if "error" not in result]
+        try:
+            history_status = save_sentiment_history(history_records)
+        except OSError as exc:
+            st.error(f"センチメント履歴を保存できませんでした: {exc}")
+        else:
+            st.caption(
+                "履歴保存: "
+                f"新規 {history_status['added']} 件 / "
+                f"更新 {history_status['updated']} 件 "
+                f"(合計 {history_status['total']} 件)"
+            )
 
         rows = []
         for result in results:

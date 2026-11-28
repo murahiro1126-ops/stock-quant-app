@@ -1,5 +1,7 @@
+import csv
 import io
 import urllib.error
+from typing import Any
 
 import pytest
 
@@ -10,6 +12,9 @@ from youtube_sentiment import (
     fetch_json,
     get_latest_video,
     get_video_stats_and_comments,
+    save_sentiment_history,
+    scan_channels,
+    to_jst_published_date,
 )
 
 
@@ -49,6 +54,187 @@ def test_calculate_sentiment_metrics_with_zero_total():
         "emotional_density": 0.0,
         "total": 0,
     }
+
+
+def test_calculate_sentiment_metrics_rounds_to_one_decimal_place():
+    result = calculate_sentiment_metrics(
+        {
+            "Euphoria": 1,
+            "Fear": 0,
+            "Mockery": 0,
+            "Anger": 1,
+            "Calm": 1,
+        }
+    )
+
+    assert result == {
+        "net_sentiment": 33.3,
+        "friction_index": 33.3,
+        "emotional_density": 66.7,
+        "total": 3,
+    }
+
+
+def test_to_jst_published_date_converts_utc_to_jst_date():
+    assert to_jst_published_date("2026-01-01T18:00:00Z") == "2026-01-02"
+
+
+def test_scan_channels_returns_timeseries_fields(monkeypatch):
+    monkeypatch.setattr(
+        "youtube_sentiment.CHANNELS",
+        {
+            "bull_asakura": {
+                "name": "テストチャンネル",
+                "channel_id": "UCtest-channel-id",
+            }
+        },
+    )
+
+    def fake_get_latest_video(channel_id, api_key):
+        assert channel_id == "UCtest-channel-id"
+        assert api_key == "youtube-key"
+        return {
+            "video_id": "video-1",
+            "title": "テスト動画",
+            "published_at": "2026-01-01T18:00:00Z",
+        }
+
+    def fake_get_video_stats_and_comments(video_id, api_key, max_comments):
+        assert video_id == "video-1"
+        assert api_key == "youtube-key"
+        assert max_comments == 30
+        return (
+            {"viewCount": "123", "commentCount": "9"},
+            ["テストコメント"],
+        )
+
+    def fake_classify_comments_batch(channel_name, title, comments, api_key):
+        assert channel_name == "テストチャンネル"
+        assert title == "テスト動画"
+        assert comments == ["テストコメント"]
+        assert api_key == "gemini-key"
+        return {
+            "Euphoria": 1,
+            "Fear": 0,
+            "Mockery": 0,
+            "Anger": 0,
+            "Calm": 0,
+            "comment_details": [],
+        }
+
+    monkeypatch.setattr(
+        "youtube_sentiment.get_latest_video",
+        fake_get_latest_video,
+    )
+    monkeypatch.setattr(
+        "youtube_sentiment.get_video_stats_and_comments",
+        fake_get_video_stats_and_comments,
+    )
+    monkeypatch.setattr(
+        "youtube_sentiment.classify_comments_batch",
+        fake_classify_comments_batch,
+    )
+
+    result = scan_channels("youtube-key", "gemini-key")[0]
+
+    required_fields = {
+        "published_at",
+        "published_date",
+        "scanned_at",
+        "channel_key",
+        "channel_name",
+        "video_id",
+        "video_title",
+        "view_count",
+        "comment_total_youtube",
+        "sample_count",
+        "Euphoria",
+        "Fear",
+        "Mockery",
+        "Anger",
+        "Calm",
+        "net_sentiment",
+        "friction_index",
+        "emotional_density",
+    }
+    assert required_fields <= result.keys()
+    assert result["published_date"] == "2026-01-02"
+    assert result["scanned_at"].endswith("+09:00")
+    assert result["channel_key"] == "bull_asakura"
+    assert result["channel_name"] == "テストチャンネル"
+    assert result["video_title"] == "テスト動画"
+    assert result["view_count"] == 123
+    assert result["comment_total_youtube"] == 9
+    assert result["sample_count"] == 1
+    assert isinstance(result["net_sentiment"], float)
+
+
+def _history_record(
+    video_id: str,
+    published_date: str,
+    scanned_at: str,
+) -> dict[str, Any]:
+    return {
+        "published_at": f"{published_date}T00:00:00Z",
+        "published_date": published_date,
+        "scanned_at": scanned_at,
+        "channel_key": "bull_asakura",
+        "channel_name": "テストチャンネル",
+        "video_id": video_id,
+        "video_title": f"動画 {video_id}",
+        "view_count": 100,
+        "comment_total_youtube": 10,
+        "sample_count": 3,
+        "Euphoria": 1,
+        "Fear": 0,
+        "Mockery": 1,
+        "Anger": 0,
+        "Calm": 1,
+        "net_sentiment": 33.3,
+        "friction_index": 33.3,
+        "emotional_density": 66.7,
+    }
+
+
+def test_save_sentiment_history_upserts_and_sorts_records(tmp_path):
+    history_path = tmp_path / "data" / "sentiment_history.csv"
+    first = _history_record(
+        "video-later",
+        "2026-01-03",
+        "2026-01-04T10:00:00+09:00",
+    )
+    older = _history_record(
+        "video-earlier",
+        "2026-01-01",
+        "2026-01-02T10:00:00+09:00",
+    )
+
+    first_save = save_sentiment_history([first, older], history_path)
+    updated = {
+        **first,
+        "scanned_at": "2026-01-05T10:00:00+09:00",
+        "sample_count": 4,
+        "Euphoria": 2,
+        "net_sentiment": 50.0,
+    }
+    second_save = save_sentiment_history([updated], history_path)
+    stale = {
+        **first,
+        "scanned_at": "2026-01-03T10:00:00+09:00",
+        "sample_count": 99,
+    }
+    stale_save = save_sentiment_history([stale], history_path)
+
+    with history_path.open("r", newline="", encoding="utf-8") as history_file:
+        rows = list(csv.DictReader(history_file))
+
+    assert first_save == {"added": 2, "updated": 0, "total": 2}
+    assert second_save == {"added": 0, "updated": 1, "total": 2}
+    assert stale_save == {"added": 0, "updated": 0, "total": 2}
+    assert [row["video_id"] for row in rows] == ["video-earlier", "video-later"]
+    assert rows[1]["scanned_at"] == "2026-01-05T10:00:00+09:00"
+    assert rows[1]["sample_count"] == "4"
+    assert rows[1]["net_sentiment"] == "50.0"
 
 
 def test_fetch_json_logs_youtube_error_details_without_api_key(monkeypatch, capsys):
